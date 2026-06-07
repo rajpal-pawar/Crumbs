@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.tauri.app/acl/2",
+  "identifier": "default",
+  "description": "Default capability set for the Crumbs main window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:allow-spawn",
+    "shell:allow-kill",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "global-shortcut:allow-is-registered"
+  ]
+}

@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+    "crumbs-daemon",
+    "src-tauri",
+]
+
+# ---------------------------------------------------------------------------
+# Shared profile overrides
+# ---------------------------------------------------------------------------
+# Keep debug builds fast for iteration; release builds lean and fast.
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+
+# A dedicated profile for CI / quick smoke-checks that still catches panics.
+[profile.ci]
+inherits = "release"
+debug = true
+strip = "none"

@@ -1,0 +1,32 @@
+[package]
+name        = "crumbs-tauri"
+version     = "0.1.0"
+edition     = "2021"
+description = "Crumbs Tauri v2 host application"
+
+# Tauri requires both a lib crate (for mobile) and a bin entry point.
+[lib]
+name       = "crumbs_tauri_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "crumbs-tauri"
+path = "src/main.rs"
+
+# ---------------------------------------------------------------------------
+# Dependencies
+# ---------------------------------------------------------------------------
+[dependencies]
+tauri           = { version = "2", features = ["tray-icon"] }
+tauri-plugin-shell           = "2"
+tauri-plugin-global-shortcut = "2"
+serde           = { version = "1", features = ["derive"] }
+serde_json      = "1"
+tokio           = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tracing         = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid            = { version = "1", features = ["v4"] }
+thiserror       = "1"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
