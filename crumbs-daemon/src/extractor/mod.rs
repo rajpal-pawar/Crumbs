@@ -76,8 +76,8 @@ impl Drop for StdoutSilencer {
 pub enum Extracted {
     /// A text document ready for BM25 indexing + text embedding.
     Text {
-        /// UTF-8 content, capped at [`Config::text_read_limit_bytes`].
-        body: String,
+        /// Chunked text content (approx 300 words per chunk with 50 word overlap).
+        chunks: Vec<String>,
         /// SHA-256 hex digest of the **full file** (not the truncated body).
         checksum: String,
         /// Detected MIME type string (e.g. `"text/plain"`).
@@ -173,6 +173,28 @@ pub fn extract(path: &Path, config: &Config) -> Result<Option<Extracted>, Extrac
 // Text extractor
 // ---------------------------------------------------------------------------
 
+fn chunk_text(text: &str) -> Vec<String> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut chunks = Vec::new();
+    let chunk_size = 300;
+    let overlap = 50;
+    
+    let mut i = 0;
+    while i < words.len() {
+        let end = std::cmp::min(i + chunk_size, words.len());
+        chunks.push(words[i..end].join(" "));
+        if end == words.len() {
+            break;
+        }
+        i += chunk_size - overlap;
+    }
+    
+    if chunks.is_empty() {
+        chunks.push(String::new());
+    }
+    chunks
+}
+
 fn extract_text(path: &Path, config: &Config) -> Result<Extracted, ExtractError> {
     let ext = path
         .extension()
@@ -181,52 +203,15 @@ fn extract_text(path: &Path, config: &Config) -> Result<Extracted, ExtractError>
         .to_ascii_lowercase();
 
     if ext == "pdf" {
-        let raw = std::fs::read(path).map_err(ExtractError::Io)?;
-        let checksum = hex::encode(Sha256::digest(&raw));
-        let mime_type = mime_guess::from_path(path)
-            .first_or_text_plain()
-            .to_string();
-
-        let body_result = {
-            let _silencer = StdoutSilencer::new();
-            pdf_extract::extract_text(path)
-        };
-        
-        let mut body = match body_result {
-            Ok(text) => text,
-            Err(e) => {
-                warn!(path = %path.display(), error = %e, "pdf text extraction failed, indexing metadata only");
-                String::new()
-            }
-        };
-
-        if body.len() > config.text_read_limit_bytes {
-            let mut end = config.text_read_limit_bytes;
-            while end > 0 && !body.is_char_boundary(end) {
-                end -= 1;
-            }
-            body.truncate(end);
-        }
-
-        debug!(path = %path.display(), body_len = body.len(), "PDF processed");
-        return Ok(Extracted::Text { body, checksum, mime_type });
+        return extract_pdf(path, config);
     }
 
     let file = File::open(path).map_err(ExtractError::Io)?;
-    let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
     let mut reader = BufReader::new(file);
 
-    // ------------------------------------------------------------------
-    // Compute SHA-256 while reading so we don't open the file twice.
-    // We need to hash the full file for accurate change-detection, but
-    // we only store `text_read_limit_bytes` worth of content.
-    // ------------------------------------------------------------------
-    let limit = config.text_read_limit_bytes;
     let mut hasher = Sha256::new();
-    let mut body_buf = Vec::with_capacity(limit.min(file_len as usize + 1));
-    let mut total_read: usize = 0;
+    let mut body_buf = Vec::new();
 
-    // Read in 64 KB chunks.  Hash everything, accumulate only up to `limit`.
     let mut chunk = vec![0u8; 64 * 1024];
     loop {
         let n = reader.read(&mut chunk).map_err(ExtractError::Io)?;
@@ -234,11 +219,7 @@ fn extract_text(path: &Path, config: &Config) -> Result<Extracted, ExtractError>
             break;
         }
         hasher.update(&chunk[..n]);
-        if total_read < limit {
-            let take = n.min(limit - total_read);
-            body_buf.extend_from_slice(&chunk[..take]);
-        }
-        total_read += n;
+        body_buf.extend_from_slice(&chunk[..n]);
     }
 
     let checksum = hex::encode(hasher.finalize());
@@ -253,14 +234,119 @@ fn extract_text(path: &Path, config: &Config) -> Result<Extracted, ExtractError>
     debug!(
         path = %path.display(),
         body_len = body.len(),
-        total_bytes = total_read,
-        truncated = total_read > limit,
         "text extracted"
     );
 
-    Ok(Extracted::Text { body, checksum, mime_type })
+    let chunks = chunk_text(&body);
+
+    Ok(Extracted::Text { chunks, checksum, mime_type })
 }
 
+// ---------------------------------------------------------------------------
+// PDF extractor (Hybrid)
+// ---------------------------------------------------------------------------
+
+fn extract_pdf(path: &Path, config: &Config) -> Result<Extracted, ExtractError> {
+    let raw = std::fs::read(path).map_err(ExtractError::Io)?;
+    let checksum = hex::encode(Sha256::digest(&raw));
+    let mime_type = mime_guess::from_path(path).first_or_text_plain().to_string();
+
+    use pdfium_render::prelude::*;
+    let pdfium = Pdfium::new(
+        Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(
+            &config.model_cache_dir()
+        ))
+        .or_else(|_| Pdfium::bind_to_system_library())
+        .map_err(|e| ExtractError::PdfDecode(format!("Pdfium bind error: {}", e)))?
+    );
+
+    let document = pdfium.load_pdf_from_file(path, None)
+        .map_err(|e| ExtractError::PdfDecode(format!("Pdfium load error: {}", e)))?;
+
+    // CRITICAL FIX: Force a solid white background so the OCR doesn't read black-on-black!
+    let render_config = PdfRenderConfig::new()
+        .set_target_width(1500)
+        .set_clear_color(PdfColor::new(255, 255, 255, 255));
+
+    let mut body = String::new();
+    let mut ocr_engine: Option<ocrs::OcrEngine> = None;
+    let mut pages_ocred = 0;
+
+    for (i, page) in document.pages().iter().enumerate() {
+        let mut page_text = page.text().map(|t| t.all()).unwrap_or_default();
+
+        // Low-Hardware OCR Fallback: If <50 chars, assume scanned
+        if page_text.trim().len() < 50 {
+            if pages_ocred < 5 { // GUARDRAIL: Max 5 pages of OCR to save CPU
+                if ocr_engine.is_none() {
+                    let detection_model_path = config.model_cache_dir().join("text-detection.rten");
+                    let recognition_model_path = config.model_cache_dir().join("text-recognition.rten");
+
+                    let detection_model = rten::Model::load_file(&detection_model_path)
+                        .map_err(|e| ExtractError::PdfDecode(format!("Failed to load detection model: {}", e)))?;
+                    let recognition_model = rten::Model::load_file(&recognition_model_path)
+                        .map_err(|e| ExtractError::PdfDecode(format!("Failed to load recognition model: {}", e)))?;
+
+                    let engine = ocrs::OcrEngine::new(ocrs::OcrEngineParams {
+                        detection_model: Some(detection_model),
+                        recognition_model: Some(recognition_model),
+                        ..Default::default()
+                    }).map_err(|e| ExtractError::PdfDecode(format!("Failed to init OCR engine: {}", e)))?;
+
+                    ocr_engine = Some(engine);
+                }
+
+                // Render page and run through Neural Networks with explicit error tracking
+                match page.render_with_config(&render_config) {
+                    Ok(bitmap) => {
+                        let dynamic_image = bitmap.as_image();
+                        let img = dynamic_image.into_rgb8();
+                        match ocrs::ImageSource::from_bytes(img.as_raw(), img.dimensions()) {
+                            Ok(img_source) => {
+                                let engine = ocr_engine.as_ref().unwrap();
+                                match engine.prepare_input(img_source) {
+                                    Ok(ocr_input) => {
+                                        match engine.detect_words(&ocr_input) {
+                                            Ok(word_rects) => {
+                                                let line_rects = engine.find_text_lines(&ocr_input, &word_rects);
+                                                match engine.recognize_text(&ocr_input, &line_rects) {
+                                                    Ok(lines) => {
+                                                        let mut extracted_words = 0;
+                                                        for line in lines.iter().flatten() {
+                                                            page_text.push_str(&line.to_string());
+                                                            page_text.push('\n');
+                                                            extracted_words += 1;
+                                                        }
+                                                        tracing::info!(path = %path.display(), page = i, words = extracted_words, "OCR successful");
+                                                    }
+                                                    Err(e) => tracing::warn!("OCR recognize_text failed: {:?}", e),
+                                                }
+                                            }
+                                            Err(e) => tracing::warn!("OCR detect_words failed: {:?}", e),
+                                        }
+                                    }
+                                    Err(e) => tracing::warn!("OCR prepare_input failed: {:?}", e),
+                                }
+                            }
+                            Err(e) => tracing::warn!("OCR ImageSource failed: {:?}", e),
+                        }
+                    }
+                    Err(e) => tracing::warn!("PDFium render failed: {:?}", e),
+                }
+                pages_ocred += 1;
+            }
+        }
+
+        body.push_str(&page_text);
+        body.push('\n');
+    }
+
+    drop(ocr_engine);
+
+    let chunks = chunk_text(&body);
+
+    Ok(Extracted::Text { chunks, checksum, mime_type })
+}
 // ---------------------------------------------------------------------------
 // Image extractor (CLIP stub)
 // ---------------------------------------------------------------------------

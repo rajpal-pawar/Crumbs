@@ -86,7 +86,7 @@ impl Config {
             onnx_intra_threads: 2,
             // 32 docs/batch: ~few MB peak RAM per batch, fast enough
             // amortisation of ONNX session startup (~200 ms).
-            embed_batch_size: 32,
+            embed_batch_size: 5,
             watch_dirs: default_watch_dirs(),
             index_parallelism: 1,
         })
@@ -108,15 +108,22 @@ impl Config {
 // ---------------------------------------------------------------------------
 
 fn resolve_data_dir() -> Result<PathBuf, ConfigError> {
-    // Hardcoding to your project directory to avoid permission/lock issues
-    Ok(PathBuf::from("/home/rajpalsinghpanwar/Crumbs/db"))
+    if let Some(mut home) = dirs::home_dir() {
+        home.push(".local");
+        home.push("share");
+        home.push("crumbs");
+        Ok(home)
+    } else {
+        Ok(PathBuf::from("/var/lib/crumbs"))
+    }
 }
 
 fn default_watch_dirs() -> Vec<PathBuf> {
-    // Only target the folders you actually need
-    vec![
-        PathBuf::from("/home/rajpalsinghpanwar/Crumbs/data"),
-    ]
+    if let Some(home) = dirs::home_dir() {
+        vec![home]
+    } else {
+        vec![PathBuf::from("/")]
+    }
 }
 // ---------------------------------------------------------------------------
 // Error type

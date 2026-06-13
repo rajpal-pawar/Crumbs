@@ -16,6 +16,8 @@ import os
 import sys
 import shutil
 import urllib.request
+import tarfile
+import zipfile
 
 # ---------------------------------------------------------------------------
 # Files to download
@@ -51,6 +53,34 @@ DOWNLOADS = [
         "filename": "clip-tokenizer.json",
         "desc":     "CLIP tokenizer",
         "size_hint": "~1 MB",
+    },
+    {
+        "url":      "https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-linux-x64.tgz",
+        "filename": "libpdfium.so",
+        "desc":     "PDFium binary (Linux)",
+        "size_hint": "~5 MB",
+        "archive_type": "tgz",
+        "extract_from": "lib/libpdfium.so"
+    },
+    {
+        "url":      "https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-win-x64.zip",
+        "filename": "pdfium.dll",
+        "desc":     "PDFium binary (Windows)",
+        "size_hint": "~5 MB",
+        "archive_type": "zip",
+        "extract_from": "x64/bin/pdfium.dll"
+    },
+    {
+        "url":      "https://huggingface.co/Macaw/OCRS/resolve/main/text-detection.rten",
+        "filename": "text-detection.rten",
+        "desc":     "OCRS text detection model",
+        "size_hint": "~5 MB",
+    },
+    {
+        "url":      "https://huggingface.co/Macaw/OCRS/resolve/main/text-recognition.rten",
+        "filename": "text-recognition.rten",
+        "desc":     "OCRS text recognition model",
+        "size_hint": "~15 MB",
     },
 ]
 
@@ -116,7 +146,7 @@ def _make_progress_hook(filename: str, size_hint: str):
 # Download helper
 # ---------------------------------------------------------------------------
 
-def download_file(url: str, dest_path: str, desc: str, size_hint: str) -> None:
+def download_file(item: dict, dest_path: str) -> None:
     """
     Download `url` to `dest_path`, printing a progress bar.
     Skips if the file already exists and is non-empty.
@@ -127,15 +157,34 @@ def download_file(url: str, dest_path: str, desc: str, size_hint: str) -> None:
         return
 
     tmp_path = dest_path + ".tmp"
+    archive_tmp = dest_path + ".archive.tmp"
+    
     try:
-        hook = _make_progress_hook(os.path.basename(dest_path), size_hint)
-        urllib.request.urlretrieve(url, tmp_path, reporthook=hook)
-        print()  # newline after progress bar
+        hook = _make_progress_hook(os.path.basename(dest_path), item["size_hint"])
+        
+        if "archive_type" in item:
+            urllib.request.urlretrieve(item["url"], archive_tmp, reporthook=hook)
+            print()
+            print("  → Extracting...")
+            if item["archive_type"] == "tgz":
+                with tarfile.open(archive_tmp, "r:gz") as tar:
+                    member = tar.getmember(item["extract_from"])
+                    with tar.extractfile(member) as f_in, open(tmp_path, "wb") as f_out:
+                        shutil.copyfileobj(f_in, f_out)
+            elif item["archive_type"] == "zip":
+                with zipfile.ZipFile(archive_tmp, "r") as z:
+                    with z.open(item["extract_from"]) as f_in, open(tmp_path, "wb") as f_out:
+                        shutil.copyfileobj(f_in, f_out)
+            os.remove(archive_tmp)
+        else:
+            urllib.request.urlretrieve(item["url"], tmp_path, reporthook=hook)
+            print()  # newline after progress bar
+            
         os.replace(tmp_path, dest_path)
     except Exception as exc:
         # Clean up partial download.
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+        if os.path.exists(tmp_path): os.remove(tmp_path)
+        if os.path.exists(archive_tmp): os.remove(archive_tmp)
         raise RuntimeError(f"Download failed: {exc}") from exc
 
 
@@ -170,7 +219,7 @@ def main() -> None:
 
         try:
             # Download into dev dir first (avoids re-downloading for runtime copy).
-            download_file(url, dev_dest, desc, size_hint)
+            download_file(item, dev_dest)
 
             # Copy to runtime dir (daemon reads from here at startup).
             if not os.path.exists(runtime_dest) or \

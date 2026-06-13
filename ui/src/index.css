@@ -36,6 +36,7 @@ html, body, #root {
   background: transparent;          /* Let Tauri transparent window show through */
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
+  cursor: default;
 }
 
 /* =========================================================================
@@ -153,6 +154,20 @@ html, body, #root {
   outline: none;
 }
 
+.hit-icon-title {
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.file-icon {
+  flex-shrink: 0;
+  color: var(--c-text-muted);
+}
+
 .hit-title {
   font-size: 13.5px;
   font-weight: 500;
@@ -160,8 +175,6 @@ html, body, #root {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  grid-column: 1;
-  grid-row: 1;
 }
 
 .hit-path {

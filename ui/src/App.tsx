@@ -14,6 +14,48 @@ const SearchIcon = () => (
   </svg>
 );
 
+const DocumentIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="file-icon">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+    <polyline points="14 2 14 8 20 8"></polyline>
+    <line x1="16" y1="13" x2="8" y2="13"></line>
+    <line x1="16" y1="17" x2="8" y2="17"></line>
+    <polyline points="10 9 9 9 8 9"></polyline>
+  </svg>
+);
+
+const ImageIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="file-icon">
+    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+    <circle cx="8.5" cy="8.5" r="1.5"></circle>
+    <polyline points="21 15 16 10 5 21"></polyline>
+  </svg>
+);
+
+const CodeIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="file-icon">
+    <polyline points="16 18 22 12 16 6"></polyline>
+    <polyline points="8 6 2 12 8 18"></polyline>
+  </svg>
+);
+
+function FileIcon({ filename }: { filename: string }) {
+  const ext = filename.split('.').pop()?.toLowerCase();
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext || '')) {
+    return <ImageIcon />;
+  }
+  if (['txt', 'md', 'json', 'yaml', 'xml', 'csv', 'js', 'ts', 'jsx', 'tsx', 'py', 'rs', 'go', 'html', 'css'].includes(ext || '')) {
+    return <CodeIcon />;
+  }
+  return <DocumentIcon />;
+}
+
+function middleTruncate(path: string, maxLength: number = 65) {
+  if (path.length <= maxLength) return path;
+  const half = Math.floor((maxLength - 3) / 2);
+  return path.slice(0, half) + '...' + path.slice(-half);
+}
+
 // ---------------------------------------------------------------------------
 // Hit row component
 // ---------------------------------------------------------------------------
@@ -31,7 +73,8 @@ function HitRow({ hit, index, selected }: { hit: SearchHit; index: number; selec
 
   // Show only the file name portion for readability; full path on hover.
   const filename = hit.title || hit.path.split(/[\\/]/).pop() || hit.path;
-  const dirPath  = hit.path;
+  const parentPath = hit.path.substring(0, Math.max(hit.path.lastIndexOf('/'), hit.path.lastIndexOf('\\'))) || hit.path;
+  const dirPath  = middleTruncate(parentPath, 65);
 
   // Clicking opens the file via the shell.
   const handleOpen = useCallback(() => {
@@ -60,7 +103,10 @@ function HitRow({ hit, index, selected }: { hit: SearchHit; index: number; selec
       onKeyDown={handleKeyDown}
       title={dirPath}
     >
-      <span className="hit-title">{filename}</span>
+      <div className="hit-icon-title">
+        <FileIcon filename={filename} />
+        <span className="hit-title">{filename}</span>
+      </div>
       <span className="hit-path">{dirPath}</span>
 
       {hit.snippet && (
@@ -85,6 +131,7 @@ function HitRow({ hit, index, selected }: { hit: SearchHit; index: number; selec
 export default function App() {
   const [query, setQuery]   = useState('');
   const [selectedIndex, setSelectedIndex] = useState(-1);
+  const [daemonStatus, setDaemonStatus]   = useState('System Ready');
   const inputRef            = useRef<HTMLInputElement>(null);
   const searchState         = useSearch(query);
 
@@ -99,6 +146,29 @@ export default function App() {
   useEffect(() => {
     setSelectedIndex(-1);
   }, [hits]);
+
+  useEffect(() => {
+    let unlistenProgress: (() => void) | undefined;
+    import('@tauri-apps/api/event').then(({ listen }) => {
+      listen<any>('progress', (event) => {
+        const payload = event.payload?.params || event.payload;
+        if (!payload) return;
+        const { scanned, indexed, errors } = payload;
+        if (scanned !== undefined && indexed !== undefined) {
+           if (scanned === indexed) {
+               setDaemonStatus(`System Ready • ${indexed} files indexed`);
+           } else {
+               setDaemonStatus(`Indexing: ${indexed} / ${scanned} files` + (errors ? ` (${errors} errors)` : ''));
+           }
+        }
+      }).then(un => {
+        unlistenProgress = un;
+      });
+    });
+    return () => {
+      if (unlistenProgress) unlistenProgress();
+    };
+  }, []);
 
   // -------------------------------------------------------------------------
   // Focus the input whenever the Tauri window gains focus.
@@ -207,46 +277,46 @@ export default function App() {
       {/* ------------------------------------------------------------------ */}
       {/* Results panel                                                       */}
       {/* ------------------------------------------------------------------ */}
-      {showResults && (
+      {(showResults || !query) && (
         <div id="crumbs-results" className="results-panel" role="listbox" aria-label="Search results">
-          <ul className="results-list" aria-live="polite" aria-atomic="false">
-            {searchState.status === 'loading' && hits.length === 0 && (
-              <li className="status-row">
-                <span className="spinner" aria-hidden="true" />
-                Searching…
-              </li>
-            )}
+          {showResults && (
+            <ul className="results-list" aria-live="polite" aria-atomic="false">
+              {searchState.status === 'loading' && hits.length === 0 && (
+                <li className="status-row">
+                  <span className="spinner" aria-hidden="true" />
+                  Searching…
+                </li>
+              )}
 
-            {searchState.status === 'error' && (
-              <li className="status-row" role="alert">
-                {searchState.message}
-              </li>
-            )}
+              {searchState.status === 'error' && (
+                <li className="status-row" role="alert">
+                  {searchState.message}
+                </li>
+              )}
 
-            {searchState.status === 'results' && hits.length === 0 && (
-              <li className="status-row">
-                No results for <strong style={{ color: 'var(--c-text)' }}>"{query}"</strong>
-              </li>
-            )}
+              {searchState.status === 'results' && hits.length === 0 && (
+                <li className="status-row">
+                  No results for <strong style={{ color: 'var(--c-text)' }}>"{query}"</strong>
+                </li>
+              )}
 
-            {hits.map((hit, i) => (
-              <li key={hit.doc_id} role="presentation">
-                <HitRow hit={hit} index={i} selected={i === selectedIndex} />
-              </li>
-            ))}
-          </ul>
+              {hits.map((hit, i) => (
+                <li key={hit.doc_id} role="presentation">
+                  <HitRow hit={hit} index={i} selected={i === selectedIndex} />
+                </li>
+              ))}
+            </ul>
+          )}
 
           {/* Footer */}
-          {hits.length > 0 && (
-            <div className="results-footer">
-              <span>{total} result{total !== 1 ? 's' : ''}</span>
-              <span>
-                <kbd className="kbd">↑↓</kbd> navigate &nbsp;
-                <kbd className="kbd">↵</kbd> open &nbsp;
-                <kbd className="kbd">Esc</kbd> dismiss
-              </span>
-            </div>
-          )}
+          <div className="results-footer">
+            <span className="daemon-status">{daemonStatus}</span>
+            <span>
+              <kbd className="kbd">↑↓</kbd> navigate &nbsp;
+              <kbd className="kbd">↵</kbd> open &nbsp;
+              <kbd className="kbd">Esc</kbd> dismiss
+            </span>
+          </div>
         </div>
       )}
     </div>

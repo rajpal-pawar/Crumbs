@@ -90,7 +90,14 @@ pub async fn handle_search(
         // ------------------------------------------------------------------
         let query_embedding: Option<Vec<f32>> =
             match embed::embed_text_batch(&[query_text.clone()], &config) {
-                Ok(mut vecs) if !vecs.is_empty() => Some(vecs.remove(0)),
+                Ok(mut vecs) if !vecs.is_empty() => {
+                    let mut chunks = vecs.remove(0);
+                    if !chunks.is_empty() {
+                        Some(chunks.remove(0))
+                    } else {
+                        None
+                    }
+                },
                 Ok(_) => {
                     warn!("embed_text_batch returned empty results for query");
                     None
@@ -215,210 +222,207 @@ pub async fn handle_status(
 // reindex
 // ---------------------------------------------------------------------------
 
-/// Handle a `reindex` request.
-///
-/// The entire pipeline runs inside `tokio::task::spawn_blocking`:
-///
-/// ```text
-/// for each file in watch_dirs:
-///   skip if > max_file_bytes
-///   extractor::extract(path) → Extracted::Text | Extracted::Image | None
-///   accumulate into text_batch or image_batch
-///
-///   if batch_size reached:
-///     embed_text_batch  → drop MiniLM session
-///     embed_image_batch → drop CLIP session
-///     db: BEGIN TX
-///       writer::upsert × N
-///     COMMIT
-///     clear batches
-///
-/// flush remaining batch (same embed + commit sequence)
-/// ```
+use std::sync::atomic::{AtomicU64, Ordering};
+use crate::ipc::SharedWriter;
+
 pub async fn handle_reindex(
     req: Request,
     config: &Arc<Config>,
     db: &Arc<Database>,
+    writer: SharedWriter,
 ) -> Response {
-    info!(id = %req.id, "reindex requested — dispatching to blocking thread pool");
+    info!(id = %req.id, "reindex requested — starting MPSC pipeline");
 
-    let config = Arc::clone(config);
-    let db     = Arc::clone(db);
-
-    // CRITICAL: the entire pipeline is synchronous — ONNX + SQLite + file I/O.
-    let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
-        run_reindex_pipeline(&config, &db)
-    })
-    .await;
+    let config_clone = Arc::clone(config);
+    let db_clone = Arc::clone(db);
+    
+    let result = tokio::task::spawn_blocking(move || {
+        run_reindex_pipeline_internal(&config_clone, &db_clone, Some(writer))
+    }).await;
 
     match result {
-        Ok(Ok(payload)) => Response::success(req.id, payload),
-        Ok(Err(e))      => Response::failure(req.id, format!("reindex error: {e}")),
-        Err(join_err)   => Response::failure(
-            req.id,
-            format!("spawn_blocking panicked: {join_err}"),
-        ),
+        Ok(Ok(stats)) => Response::success(req.id, json!({
+            "files_scanned": stats.scanned,
+            "files_indexed": stats.indexed,
+            "files_skipped": stats.skipped,
+            "files_errored": stats.errors,
+        })),
+        Ok(Err(e)) => Response::failure(req.id, format!("reindex failed: {}", e)),
+        Err(e) => Response::failure(req.id, format!("reindex task panicked: {}", e)),
     }
 }
 
+pub fn run_reindex_pipeline(config: &Arc<Config>, db: &Arc<Database>) -> Result<(), String> {
+    run_reindex_pipeline_internal(config, db, None).map(|_| ())
+}
+
+pub fn run_reindex_pipeline_internal(
+    config: &Arc<Config>,
+    db: &Arc<Database>,
+    writer: Option<SharedWriter>,
+) -> Result<ReindexStats, String> {
+    let (path_tx, path_rx) = std::sync::mpsc::sync_channel::<PathBuf>(1000);
+    
+    let scanned = Arc::new(AtomicU64::new(0));
+    
+    let producer_scanned = Arc::clone(&scanned);
+    let config_clone = Arc::clone(config);
+    let producer = std::thread::spawn(move || {
+        for dir in &config_clone.watch_dirs {
+            if !dir.exists() { continue; }
+            let walker = walkdir::WalkDir::new(dir)
+                .into_iter()
+                .filter_entry(|e| {
+                    let name = e.file_name().to_string_lossy().to_lowercase();
+                    if e.file_type().is_dir() {
+                        !matches!(
+                            name.as_str(),
+                            "node_modules" | "target" | ".git" | ".cache" | "appdata" | "temp" | "windows" | "system32" | "usr" | "bin" | "lib" | "snap" | "flatpak" | "pictures" | "videos" | "music"
+                        )
+                    } else {
+                        true
+                    }
+                })
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().is_file());
+
+            for entry in walker {
+                let path = entry.path().to_path_buf();
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                if !matches!(ext.as_str(), "txt" | "md" | "pdf" | "png" | "jpg" | "jpeg") {
+                    continue;
+                }
+                producer_scanned.fetch_add(1, Ordering::Relaxed);
+                if path_tx.send(path).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    let config_clone = Arc::clone(config);
+    let db_clone = Arc::clone(db);
+    let consumer_scanned = Arc::clone(&scanned);
+    
+    let consumer = std::thread::spawn(move || {
+        let mut stats = ReindexStats::default();
+        let mut text_batch = Vec::with_capacity(config_clone.embed_batch_size);
+        let mut image_batch = Vec::with_capacity(config_clone.embed_batch_size);
+        
+        let rt_handle = tokio::runtime::Handle::try_current().ok();
+
+        let report_progress = |stats: &ReindexStats, writer_opt: &Option<SharedWriter>, scanned_arc: &Arc<AtomicU64>, rt: &Option<tokio::runtime::Handle>| {
+            if let (Some(w), Some(h)) = (writer_opt, rt) {
+                let s = scanned_arc.load(Ordering::Relaxed);
+                let w = w.clone();
+                let event = serde_json::json!({
+                    "method": "progress",
+                    "params": {
+                        "scanned": s,
+                        "indexed": stats.indexed,
+                        "errors": stats.errors
+                    }
+                });
+                h.spawn(async move {
+                    crate::ipc::write_raw_event(&w, event).await;
+                });
+            }
+        };
+
+        while let Ok(path) = path_rx.recv() {
+            let meta = match std::fs::metadata(&path) {
+                Ok(m) => m,
+                Err(_) => { stats.skipped += 1; continue; }
+            };
+
+            if meta.len() > config_clone.max_file_bytes {
+                stats.skipped += 1;
+                continue;
+            }
+
+            let extracted = match extractor::extract(&path, &config_clone) {
+                Ok(Some(e)) => e,
+                Ok(None) => { stats.skipped += 1; continue; }
+                Err(_) => { stats.errors += 1; continue; }
+            };
+
+            let title = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let checksum = extracted.checksum().to_owned();
+            let mime_type = extracted.mime_type().to_owned();
+            let size_bytes = meta.len();
+
+            match extracted {
+                Extracted::Text { chunks, .. } => {
+                    text_batch.push(PendingItem {
+                        path, title, checksum, mime_type, size_bytes,
+                        chunks: Some(chunks), image: None,
+                    });
+                }
+                Extracted::Image { image, .. } => {
+                    image_batch.push(PendingItem {
+                        path, title, checksum, mime_type, size_bytes,
+                        chunks: None, image: Some(image),
+                    });
+                }
+            }
+
+            let mut flushed = false;
+            if text_batch.len() >= config_clone.embed_batch_size {
+                if flush_text_batch(&mut text_batch, &config_clone, &db_clone, &mut stats).is_err() {
+                    stats.errors += text_batch.len() as u64;
+                    text_batch.clear();
+                }
+                flushed = true;
+            }
+            if image_batch.len() >= config_clone.embed_batch_size {
+                if flush_image_batch(&mut image_batch, &config_clone, &db_clone, &mut stats).is_err() {
+                    stats.errors += image_batch.len() as u64;
+                    image_batch.clear();
+                }
+                flushed = true;
+            }
+
+            if flushed {
+                report_progress(&stats, &writer, &consumer_scanned, &rt_handle);
+            }
+        }
+
+        let mut final_flushed = false;
+        if !text_batch.is_empty() {
+            let _ = flush_text_batch(&mut text_batch, &config_clone, &db_clone, &mut stats);
+            final_flushed = true;
+        }
+        if !image_batch.is_empty() {
+            let _ = flush_image_batch(&mut image_batch, &config_clone, &db_clone, &mut stats);
+            final_flushed = true;
+        }
+        
+        if final_flushed {
+            report_progress(&stats, &writer, &consumer_scanned, &rt_handle);
+        }
+
+        stats.scanned = consumer_scanned.load(Ordering::Relaxed);
+        stats
+    });
+
+    let _ = producer.join();
+    let stats = consumer.join().map_err(|_| "Consumer thread panicked".to_string())?;
+
+    Ok(stats)
+}
+
 // ---------------------------------------------------------------------------
-// Reindex pipeline (synchronous — runs on spawn_blocking thread)
+// Reindex pipeline
 // ---------------------------------------------------------------------------
 
-/// One pending item in the extraction batch.
 struct PendingItem {
     path:       PathBuf,
     title:      String,
     checksum:   String,
     mime_type:  String,
     size_bytes: u64,
-    /// Present for text documents.
-    body:       Option<String>,
-    /// Present for image documents.
+    chunks:     Option<Vec<String>>,
     image:      Option<DynamicImage>,
-}
-
-pub fn run_reindex_pipeline(
-    config: &Config,
-    db: &Database,
-) -> Result<serde_json::Value, String> {
-    let mut stats = ReindexStats::default();
-
-    // Accumulated batch of pending items (mixed text + image).
-    let mut text_batch:  Vec<PendingItem> = Vec::with_capacity(config.embed_batch_size);
-    let mut image_batch: Vec<PendingItem> = Vec::with_capacity(config.embed_batch_size);
-
-    // -----------------------------------------------------------------------
-    // Walk all watch directories.
-    // -----------------------------------------------------------------------
-    for dir in &config.watch_dirs {
-        if !dir.exists() {
-            debug!(path = %dir.display(), "watch dir does not exist — skipping");
-            continue;
-        }
-
-        let walker = walkdir::WalkDir::new(dir)
-            .follow_links(false)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file());
-
-        for entry in walker {
-            stats.scanned += 1;
-
-            // ---------------------------------------------------------------
-            // Size gate.
-            // ---------------------------------------------------------------
-            let meta = match entry.metadata() {
-                Ok(m)  => m,
-                Err(e) => {
-                    warn!(path = %entry.path().display(), error = %e, "metadata error — skipping");
-                    stats.skipped += 1;
-                    continue;
-                }
-            };
-
-            if meta.len() > config.max_file_bytes {
-                debug!(
-                    path = %entry.path().display(),
-                    bytes = meta.len(),
-                    limit = config.max_file_bytes,
-                    "file exceeds size limit — skipping"
-                );
-                stats.skipped += 1;
-                continue;
-            }
-
-            // ---------------------------------------------------------------
-            // Extract.
-            // ---------------------------------------------------------------
-            let path = entry.path().to_path_buf();
-            let extracted = match extractor::extract(&path, config) {
-                Ok(Some(e)) => e,
-                Ok(None)    => { stats.skipped += 1; continue; }
-                Err(e)      => {
-                    warn!(path = %path.display(), error = %e, "extraction error — skipping");
-                    stats.errors += 1;
-                    continue;
-                }
-            };
-
-            let title      = path.file_name()
-                                 .map(|n| n.to_string_lossy().into_owned())
-                                 .unwrap_or_default();
-            let checksum   = extracted.checksum().to_owned();
-            let mime_type  = extracted.mime_type().to_owned();
-            let size_bytes = meta.len();
-
-            match extracted {
-                Extracted::Text { body, .. } => {
-                    text_batch.push(PendingItem {
-                        path, title, checksum, mime_type, size_bytes,
-                        body: Some(body),
-                        image: None,
-                    });
-                }
-                Extracted::Image { image, .. } => {
-                    image_batch.push(PendingItem {
-                        path, title, checksum, mime_type, size_bytes,
-                        body: None,
-                        image: Some(image),
-                    });
-                }
-            }
-
-            // ---------------------------------------------------------------
-            // Flush when batch is full.
-            // ---------------------------------------------------------------
-            if text_batch.len() >= config.embed_batch_size {
-                if let Err(e) = flush_text_batch(&mut text_batch, config, db, &mut stats) {
-                    warn!(error = %e, "failed to flush text batch — skipping batch");
-                    stats.errors += text_batch.len() as u64;
-                    text_batch.clear();
-                }
-            }
-            if image_batch.len() >= config.embed_batch_size {
-                if let Err(e) = flush_image_batch(&mut image_batch, config, db, &mut stats) {
-                    warn!(error = %e, "failed to flush image batch — skipping batch");
-                    stats.errors += image_batch.len() as u64;
-                    image_batch.clear();
-                }
-            }
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Flush remaining items.
-    // -----------------------------------------------------------------------
-    if !text_batch.is_empty() {
-        if let Err(e) = flush_text_batch(&mut text_batch, config, db, &mut stats) {
-            warn!(error = %e, "failed to flush remaining text batch — skipping");
-            stats.errors += text_batch.len() as u64;
-            text_batch.clear();
-        }
-    }
-    if !image_batch.is_empty() {
-        if let Err(e) = flush_image_batch(&mut image_batch, config, db, &mut stats) {
-            warn!(error = %e, "failed to flush remaining image batch — skipping");
-            stats.errors += image_batch.len() as u64;
-            image_batch.clear();
-        }
-    }
-
-    info!(
-        scanned  = stats.scanned,
-        indexed  = stats.indexed,
-        skipped  = stats.skipped,
-        errors   = stats.errors,
-        "reindex complete"
-    );
-
-    Ok(json!({
-        "files_scanned": stats.scanned,
-        "files_indexed": stats.indexed,
-        "files_skipped": stats.skipped,
-        "files_errored": stats.errors,
-    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -451,19 +455,21 @@ fn flush_text_batch(
 
     // Collect non-empty body text refs for the embedder.
     let mut texts_to_embed = Vec::new();
-    let mut batch_to_text_idx = vec![None; batch.len()];
+    let mut batch_to_text_idx = vec![Vec::new(); batch.len()];
 
     for (i, item) in batch.iter().enumerate() {
-        if let Some(body) = &item.body {
-            if !body.trim().is_empty() {
-                batch_to_text_idx[i] = Some(texts_to_embed.len());
-                texts_to_embed.push(body.clone());
+        if let Some(chunks) = &item.chunks {
+            for chunk in chunks {
+                if !chunk.trim().is_empty() {
+                    batch_to_text_idx[i].push(texts_to_embed.len());
+                    texts_to_embed.push(chunk.clone());
+                }
             }
         }
     }
 
     // Embed the text documents using the shared session.
-    let embeddings: Option<Vec<Vec<f32>>> = if texts_to_embed.is_empty() {
+    let embeddings: Option<Vec<Vec<Vec<f32>>>> = if texts_to_embed.is_empty() {
         None
     } else {
         match embed::embed_text_batch(&texts_to_embed, config) {
@@ -486,20 +492,22 @@ fn flush_text_batch(
             .map_err(crate::index::DbError::Rusqlite)?;
 
         for (i, item) in batch.iter().enumerate() {
-            let emb_records: Vec<EmbeddingRecord> = if let Some(text_idx) = batch_to_text_idx[i] {
-                embeddings
-                    .as_ref()
-                    .and_then(|vecs| vecs.get(text_idx))
-                    .map(|v| vec![EmbeddingRecord { vector: v.clone() }])
-                    .unwrap_or_default()
-            } else {
-                Vec::new() // No embedding for empty text
-            };
+            let mut emb_records = Vec::new();
+            if let Some(embeddings) = &embeddings {
+                for &idx in &batch_to_text_idx[i] {
+                    if let Some(vecs) = embeddings.get(idx) {
+                        for v in vecs {
+                            emb_records.push(EmbeddingRecord { vector: v.clone() });
+                        }
+                    }
+                }
+            }
 
+            let full_body = item.chunks.as_ref().map(|c| c.join("\n"));
             let doc = DocumentRecord {
                 path:       &item.path,
                 title:      &item.title,
-                body:       item.body.as_deref(),
+                body:       full_body.as_deref(),
                 mime_type:  &item.mime_type,
                 checksum:   &item.checksum,
                 size_bytes: item.size_bytes,

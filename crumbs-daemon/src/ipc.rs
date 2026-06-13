@@ -186,7 +186,7 @@ async fn dispatch(req: Request, config: Arc<Config>, db: Arc<Database>, writer: 
             handlers::handle_status(req, &config, &db).await
         }
         "reindex" => {
-            handlers::handle_reindex(req, &config, &db).await
+            handlers::handle_reindex(req, &config, &db, writer.clone()).await
         }
         unknown => {
             warn!(method = %unknown, "unknown IPC method");
@@ -205,7 +205,7 @@ async fn dispatch(req: Request, config: Arc<Config>, db: Arc<Database>, writer: 
 ///
 /// Acquires the mutex, writes `<json>\n`, and releases.  The mutex guarantees
 /// that lines from concurrent tasks never interleave.
-async fn write_response(writer: &SharedWriter, response: Response) {
+pub async fn write_response(writer: &SharedWriter, response: Response) {
     let mut line = match serde_json::to_string(&response) {
         Ok(s) => s,
         Err(e) => {
@@ -225,6 +225,23 @@ async fn write_response(writer: &SharedWriter, response: Response) {
     if let Err(e) = stdout.flush().await {
         error!(error = %e, "failed to flush stdout");
     }
+}
+
+pub async fn write_raw_event(writer: &SharedWriter, event: serde_json::Value) {
+    let mut line = match serde_json::to_string(&event) {
+        Ok(s) => s,
+        Err(e) => {
+            error!(error = %e, "failed to serialise raw event — dropping");
+            return;
+        }
+    };
+    line.push('\n');
+
+    use tokio::io::AsyncWriteExt;
+    let mut stdout_guard = writer.lock().await;
+    let stdout = &mut *stdout_guard;
+    let _ = stdout.write_all(line.as_bytes()).await;
+    let _ = stdout.flush().await;
 }
 
 // ---------------------------------------------------------------------------

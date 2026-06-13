@@ -171,13 +171,17 @@ async fn main() {
             }
         };
 
-        for dir in &crawl_config.watch_dirs {
-            if dir.exists() {
-                if let Err(e) = watcher.watch(dir, RecursiveMode::Recursive) {
-                    warn!(path = %dir.display(), error = %e, "failed to watch directory");
-                } else {
-                    info!(path = %dir.display(), "watching directory for changes");
-                }
+        let watch_dir = dirs::home_dir()
+            .map(|mut p| { p.push("Crumbs"); p.push("data"); p })
+            .unwrap_or_else(|| std::path::PathBuf::from("/var/lib/crumbs/data"));
+            
+        std::fs::create_dir_all(&watch_dir).ok();
+
+        if watch_dir.exists() {
+            if let Err(e) = watcher.watch(&watch_dir, RecursiveMode::Recursive) {
+                warn!(path = %watch_dir.display(), error = %e, "failed to watch directory");
+            } else {
+                info!(path = %watch_dir.display(), "watching directory for changes");
             }
         }
 

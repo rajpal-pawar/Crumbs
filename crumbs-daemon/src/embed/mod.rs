@@ -160,7 +160,7 @@ pub fn is_minilm_ready() -> bool {
 pub fn embed_text_batch(
     texts: &[String],
     config: &Config,
-) -> Result<Vec<Vec<f32>>, EmbedError> {
+) -> Result<Vec<Vec<Vec<f32>>>, EmbedError> {
     if texts.is_empty() {
         return Ok(Vec::new());
     }
@@ -195,45 +195,51 @@ pub fn embed_text_batch(
         None => return Err(EmbedError::ModelNotFound(config.model_cache_dir().join(MINILM_FILENAME))),
     };
 
-    
     let mut results = Vec::with_capacity(texts.len());
 
     for (doc_idx, text) in texts.iter().enumerate() {
+        let chunks = chunk_text(text, 300, 50);
+        let mut doc_embeddings = Vec::with_capacity(chunks.len());
+        
         let mut session_guard = session_mutex.lock().unwrap();
-        // Encode: truncation + padding to MINILM_SEQ_LEN handled by the
-        // tokenizer's built-in padding/truncation configuration.
-        // We set them explicitly below to guarantee the correct shapes.
-        let encoding = tokenizer
-            .encode(text.as_str(), true)
-            .map_err(|e| EmbedError::Tokenizer(e.to_string()))?;
+        
+        for chunk in chunks {
+            // Encode: truncation + padding to MINILM_SEQ_LEN handled by the
+            // tokenizer's built-in padding/truncation configuration.
+            // We set them explicitly below to guarantee the correct shapes.
+            let encoding = tokenizer
+                .encode(chunk.as_str(), true)
+                .map_err(|e| EmbedError::Tokenizer(e.to_string()))?;
 
-        // Build input tensors of shape [1, MINILM_SEQ_LEN].
-        let (ids, mask, type_ids) = encode_to_tensors(&encoding, MINILM_SEQ_LEN)?;
+            // Build input tensors of shape [1, MINILM_SEQ_LEN].
+            let (ids, mask, type_ids) = encode_to_tensors(&encoding, MINILM_SEQ_LEN)?;
 
-        let inputs = ort::inputs![
-            "input_ids"      => ort::value::Tensor::from_array(ids).map_err(|e| EmbedError::Ort(e.to_string()))?,
-            "attention_mask" => ort::value::Tensor::from_array(mask.clone()).map_err(|e| EmbedError::Ort(e.to_string()))?,
-            "token_type_ids" => ort::value::Tensor::from_array(type_ids).map_err(|e| EmbedError::Ort(e.to_string()))?,
-        ];
+            let inputs = ort::inputs![
+                "input_ids"      => ort::value::Tensor::from_array(ids).map_err(|e| EmbedError::Ort(e.to_string()))?,
+                "attention_mask" => ort::value::Tensor::from_array(mask.clone()).map_err(|e| EmbedError::Ort(e.to_string()))?,
+                "token_type_ids" => ort::value::Tensor::from_array(type_ids).map_err(|e| EmbedError::Ort(e.to_string()))?,
+            ];
 
-        let outputs = session_guard.run(inputs).map_err(|e| EmbedError::Ort(e.to_string()))?;
+            let outputs = session_guard.run(inputs).map_err(|e| EmbedError::Ort(e.to_string()))?;
 
-        // MiniLM output: last_hidden_state [1, seq_len, 384].
-        // Extract as ArrayViewD to preserve multi-dimensional layout.
-        let hidden = outputs["last_hidden_state"]
-            .try_extract_array::<f32>()
-            .map_err(|e| EmbedError::Ort(e.to_string()))?;
+            // MiniLM output: last_hidden_state [1, seq_len, 384].
+            // Extract as ArrayViewD to preserve multi-dimensional layout.
+            let hidden = outputs["last_hidden_state"]
+                .try_extract_array::<f32>()
+                .map_err(|e| EmbedError::Ort(e.to_string()))?;
 
-        // Extract the mask for accurate mean-pooling (only real tokens, not padding).
-        let real_mask: Vec<bool> = mask
-            .iter()
-            .map(|&m| m == 1i64)
-            .collect();
+            // Extract the mask for accurate mean-pooling (only real tokens, not padding).
+            let real_mask: Vec<bool> = mask
+                .iter()
+                .map(|&m| m == 1i64)
+                .collect();
 
-        let embedding = mean_pool_with_mask(hidden.view(), &real_mask);
-        results.push(embedding);
+            let embedding = mean_pool_with_mask(hidden.view(), &real_mask);
+            doc_embeddings.push(embedding);
+        }
 
-        debug!(doc_idx, "text embedding generated");
+        results.push(doc_embeddings);
+        debug!(doc_idx, "text embeddings generated for all chunks");
     }
 
     // Session + tokenizer dropped here — weights freed from RAM.
@@ -465,6 +471,28 @@ fn mean_pool_with_mask(
     }
 
     pool
+}
+
+// ---------------------------------------------------------------------------
+// Text chunking
+// ---------------------------------------------------------------------------
+
+fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<String> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.is_empty() {
+        return vec![String::new()]; // At least one empty chunk to avoid dropping empty documents
+    }
+    let mut chunks = Vec::new();
+    let mut i = 0;
+    while i < words.len() {
+        let end = (i + chunk_size).min(words.len());
+        chunks.push(words[i..end].join(" "));
+        if end == words.len() {
+            break;
+        }
+        i += chunk_size - overlap;
+    }
+    chunks
 }
 
 // ---------------------------------------------------------------------------
