@@ -193,17 +193,9 @@ CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
 END;
 ";
 
-// ---------------------------------------------------------------------------
-// DDL — vec0 virtual table (MUST be outside explicit transactions)
-// ---------------------------------------------------------------------------
-
 const VEC0_SCHEMA_SQL: &str = "
 -- We use `float[384]` as sqlite-vec strictly requires the exact array dimension.
 -- This supports 384-dim f32 text embeddings (all-MiniLM-L6-v2, 1536 bytes).
--- Note: If 512-dim image embeddings (CLIP) are needed later, they must go in a
--- separate table, as vec0 dimensions are strictly fixed.
---
--- Dimension correctness is enforced at the application layer in writer.rs.
 -- The `doc_id` auxiliary column lets us JOIN back to `documents` after ANN
 -- search without a separate lookup.
 --
@@ -212,6 +204,13 @@ const VEC0_SCHEMA_SQL: &str = "
 -- inside an explicit transaction corrupts the database.
 CREATE VIRTUAL TABLE IF NOT EXISTS embeddings USING vec0(
     embedding float[384],
+    +doc_id   INTEGER,
+    +dim      INTEGER
+);
+
+-- Separate table for 512-dim image embeddings (CLIP).
+CREATE VIRTUAL TABLE IF NOT EXISTS embeddings_images USING vec0(
+    embedding float[512],
     +doc_id   INTEGER,
     +dim      INTEGER
 );

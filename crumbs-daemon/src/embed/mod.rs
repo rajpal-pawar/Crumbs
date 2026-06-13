@@ -56,6 +56,14 @@ static MODEL_SESSION: std::sync::OnceLock<Option<StdMutex<Session>>> = std::sync
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+fn l2_normalize(vec: &mut [f32]) {
+    let norm = vec.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for v in vec.iter_mut() {
+            *v /= norm;
+        }
+    }
+}
 
 /// INT8-quantized MiniLM from Xenova/all-MiniLM-L6-v2.
 /// Reduces model RAM from ~90 MB → ~23 MB.
@@ -63,12 +71,14 @@ const MINILM_FILENAME:    &str = "minilm-l6-int8.onnx";
 const TOKENIZER_FILENAME: &str = "tokenizer.json";
 /// INT8-quantized CLIP visual encoder from Xenova/clip-vit-base-patch32.
 /// Reduces model RAM from ~350 MB → ~87 MB.
-const CLIP_FILENAME:      &str = "clip-vit-b32-int8.onnx";
+const CLIP_FILENAME: &str = "clip-vision-int8.onnx";
+const CLIP_TEXT_FILENAME: &str = "clip-text-int8.onnx";
+const CLIP_TOKENIZER_FILENAME: &str = "clip-tokenizer.json";
 
 /// Maximum token sequence length fed to MiniLM.
 /// MiniLM-L6-v2 supports up to 512, but 128 covers most short documents
 /// and halves the tensor allocation.
-const MINILM_SEQ_LEN: usize = 128;
+const MINILM_SEQ_LEN: usize = 512;
 
 /// CLIP ViT-B/32 expected spatial resolution.
 const CLIP_IMAGE_SIZE: u32 = 224;
@@ -100,16 +110,8 @@ pub fn init_minilm_session(config: &Config) -> Result<Session, EmbedError> {
 /// from blocking concurrent tasks later (which caused a deadlock with the
 /// 30-second IPC timeout on slow hardware).
 pub fn eagerly_init_minilm(config: &Config) {
-    // ort v2.0+ requires explicit global initialization.
-    // If we don't do this, Session::builder() will panic silently
-    // on this background thread!
-    if let Err(e) = ort::init().with_name("crumbs-embed").commit() {
-        tracing::error!("Failed to initialize ONNX Runtime environment: {}", e);
-        return;
-    }
-
     MODEL_SESSION.get_or_init(|| {
-        info!("Initializing MiniLM ONNX session globally...");
+        tracing::info!("Initializing MiniLM ONNX session globally...");
         let result = std::panic::catch_unwind(|| {
             init_minilm_session(config)
         });
@@ -202,7 +204,7 @@ pub fn embed_text_batch(
         // tokenizer's built-in padding/truncation configuration.
         // We set them explicitly below to guarantee the correct shapes.
         let encoding = tokenizer
-            .encode(text.as_str(), false)
+            .encode(text.as_str(), true)
             .map_err(|e| EmbedError::Tokenizer(e.to_string()))?;
 
         // Build input tensors of shape [1, MINILM_SEQ_LEN].
@@ -289,23 +291,31 @@ pub fn embed_image_batch(
         let rgb = resized.to_rgb8();
         let pixel_values = image_to_clip_tensor(rgb)?;
 
+        // The provided ONNX model combines both text and image pipelines.
+        // It expects `input_ids` and `attention_mask` even if we only want
+        // the `image_embeds` output. Provide dummy tensors.
+       // The dedicated vision model ONLY requires pixel_values.
         let inputs = ort::inputs![
-            "pixel_values" => ort::value::Tensor::from_array(pixel_values).map_err(|e| EmbedError::Ort(e.to_string()))?
+            "pixel_values" => ort::value::Tensor::from_array(pixel_values).map_err(|e| EmbedError::Ort(e.to_string()))?,
         ];
 
         let outputs = session.run(inputs).map_err(|e| EmbedError::Ort(e.to_string()))?;
 
+        // Extract the 512-D vector using the correct node name
         let embeds = outputs["image_embeds"]
             .try_extract_array::<f32>()
             .map_err(|e| EmbedError::Ort(e.to_string()))?;
+           
 
-        let vec: Vec<f32> = embeds.iter().copied().collect();
+        let mut vec: Vec<f32> = embeds.iter().copied().collect(); // Make it mut
         if vec.len() != 512 {
             return Err(EmbedError::Shape(format!(
                 "expected CLIP output dim 512, got {}",
                 vec.len()
             )));
         }
+
+        l2_normalize(&mut vec); // <--- ADD THIS LINE TO SHRINK THE MATH
 
         results.push(vec);
         debug!(doc_idx, "image embedding generated");
@@ -315,6 +325,65 @@ pub fn embed_image_batch(
     info!(count = results.len(), "CLIP session closed (lazy drop)");
 
     Ok(results)
+}
+
+/// Generate 512-dim text embeddings using CLIP text encoder for querying images.
+pub fn embed_clip_text(query: &str, config: &Config) -> Result<Vec<f32>, EmbedError> {
+    let models_dir = config.model_cache_dir();
+    let tokenizer_path = models_dir.join(CLIP_TOKENIZER_FILENAME);
+    let model_path = models_dir.join(CLIP_TEXT_FILENAME);
+
+    check_file_exists(&tokenizer_path)?;
+    check_file_exists(&model_path)?;
+
+    info!(model = CLIP_TEXT_FILENAME, "opening CLIP text session (lazy)");
+
+    let tokenizer = Tokenizer::from_file(&tokenizer_path)
+        .map_err(|e| EmbedError::Tokenizer(e.to_string()))?;
+
+    let mut session = Session::builder()
+        .map_err(|e| EmbedError::Ort(e.to_string()))?
+        .with_intra_threads(config.onnx_intra_threads as usize)
+        .map_err(|e| EmbedError::Ort(e.to_string()))?
+        .with_inter_threads(1)
+        .map_err(|e| EmbedError::Ort(e.to_string()))?
+        .commit_from_file(&model_path)
+        .map_err(|e| EmbedError::Ort(e.to_string()))?;
+
+    let encoding = tokenizer
+        .encode(query, true)
+        .map_err(|e| EmbedError::Tokenizer(e.to_string()))?;
+
+    // CLIP strict 77 tokens limit
+    // CLIP strict 77 tokens limit
+    let (ids, _mask, _type_ids) = encode_to_tensors(&encoding, 77)?; // Added _mask to fix the warning
+
+    let inputs = ort::inputs![
+        "input_ids" => ort::value::Tensor::from_array(ids).map_err(|e| EmbedError::Ort(e.to_string()))?,
+    ];
+
+    let outputs = session.run(inputs).map_err(|e| EmbedError::Ort(e.to_string()))?;
+
+    // Extract the 512-D vector
+    let embeds = outputs["text_embeds"]
+        .try_extract_array::<f32>()
+        .map_err(|e| EmbedError::Ort(e.to_string()))?;
+
+    // MAKE THIS MUTABLE
+    let mut vec: Vec<f32> = embeds.iter().copied().collect();
+    if vec.len() != 512 {
+        return Err(EmbedError::Shape(format!(
+            "expected CLIP text output dim 512, got {}",
+            vec.len()
+        )));
+    }
+
+    // SHRINK THE VECTOR TO 1.0
+    l2_normalize(&mut vec);
+
+    info!("CLIP text session closed (lazy drop)");
+
+    Ok(vec)
 }
 
 // ---------------------------------------------------------------------------

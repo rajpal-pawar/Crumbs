@@ -13,6 +13,11 @@ members = [
 opt-level = 0
 debug = true
 
+# Optimize all dependencies even in debug mode.
+# This makes ONNX model loading take <1s instead of 3+ minutes during development!
+[profile.dev.package."*"]
+opt-level = 3
+
 [profile.release]
 opt-level = 3
 lto = "thin"

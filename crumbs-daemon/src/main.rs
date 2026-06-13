@@ -56,6 +56,13 @@ async fn main() {
     info!("crumbs-daemon starting up");
 
     // -----------------------------------------------------------------------
+    // 2a. Initialize ONNX Runtime globally (Synchronous)
+    // -----------------------------------------------------------------------
+    info!("Initializing ONNX Runtime globally...");
+    let _ = ort::init().with_name("crumbs-embed").commit();
+    info!("ONNX Runtime initialized.");
+
+    // -----------------------------------------------------------------------
     // 2. Load configuration
     // -----------------------------------------------------------------------
     let config = match config::Config::load() {
@@ -89,18 +96,18 @@ async fn main() {
     };
 
     // -----------------------------------------------------------------------
-    // 4b. Background MiniLM ONNX session initialization
-    //     Fire-and-forget: the model loads in the background while the IPC
-    //     loop and crawl start immediately.  Search degrades to text-only
-    //     (BM25 + LIKE) until the model is ready.
-    //     NOTE: We do NOT .await this — that would block startup for 3+ min
-    //     on debug builds / slow hardware.
+    // 4b. MiniLM ONNX session initialization (BLOCKING)
+    //     We AWAIT this before starting the crawl so that the initial index
+    //     run actually generates embeddings.  The IPC loop is spawned first
+    //     (below) so the UI is responsive while the model loads.
     // -----------------------------------------------------------------------
     {
         let init_config = config.clone();
-        tokio::task::spawn_blocking(move || {
+        info!("Loading MiniLM ONNX model (this may take a few seconds)...");
+        let _ = tokio::task::spawn_blocking(move || {
             embed::eagerly_init_minilm(&init_config);
-        });
+        }).await;
+        info!("MiniLM initialization complete (model ready = {})", embed::is_minilm_ready());
     }
 
     // -----------------------------------------------------------------------

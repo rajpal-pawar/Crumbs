@@ -106,12 +106,27 @@ pub async fn handle_search(
             };
         // MiniLM session is dropped inside embed_text_batch. ✓
 
+        let clip_embedding: Option<Vec<f32>> =
+            match embed::embed_clip_text(&query_text, &config) {
+                Ok(vec) => Some(vec),
+                Err(embed::EmbedError::ModelNotFound(_)) => {
+                    debug!("CLIP text model absent — skipping image search");
+                    None
+                }
+                Err(e) => {
+                    warn!(error = %e, "CLIP text embedding failed — skipping image search");
+                    None
+                }
+            };
+        // CLIP session is dropped inside embed_clip_text. ✓
+
         // ------------------------------------------------------------------
         // 2. Run hybrid search.
         // ------------------------------------------------------------------
         let sq = SearchQuery::new(
             &query_text,
             query_embedding.as_deref(),
+            clip_embedding.as_deref(),
             limit,
         );
 
@@ -434,24 +449,33 @@ fn flush_text_batch(
         return Ok(());
     }
 
-    // Collect body text refs for the embedder.
-    let texts: Vec<String> = batch
-        .iter()
-        .filter_map(|item| item.body.clone())
-        .collect();
+    // Collect non-empty body text refs for the embedder.
+    let mut texts_to_embed = Vec::new();
+    let mut batch_to_text_idx = vec![None; batch.len()];
+
+    for (i, item) in batch.iter().enumerate() {
+        if let Some(body) = &item.body {
+            if !body.trim().is_empty() {
+                batch_to_text_idx[i] = Some(texts_to_embed.len());
+                texts_to_embed.push(body.clone());
+            }
+        }
+    }
 
     // Embed the text documents using the shared session.
-    let embeddings_or_err = embed::embed_text_batch(&texts, config);
-
-    let embeddings: Option<Vec<Vec<f32>>> = match embeddings_or_err {
-        Ok(vecs) => Some(vecs),
-        Err(embed::EmbedError::ModelNotFound(_)) => {
-            warn!("MiniLM absent — upserting text docs without embeddings");
-            None
-        }
-        Err(e) => {
-            warn!(error = %e, "text embedding failed — upserting without embeddings");
-            None
+    let embeddings: Option<Vec<Vec<f32>>> = if texts_to_embed.is_empty() {
+        None
+    } else {
+        match embed::embed_text_batch(&texts_to_embed, config) {
+            Ok(vecs) => Some(vecs),
+            Err(embed::EmbedError::ModelNotFound(_)) => {
+                warn!("MiniLM absent — upserting text docs without embeddings");
+                None
+            }
+            Err(e) => {
+                warn!(error = %e, "text embedding failed — upserting without embeddings");
+                None
+            }
         }
     };
     // MiniLM session is dropped inside embed_text_batch. ✓
@@ -462,11 +486,15 @@ fn flush_text_batch(
             .map_err(crate::index::DbError::Rusqlite)?;
 
         for (i, item) in batch.iter().enumerate() {
-            let emb_records: Vec<EmbeddingRecord> = embeddings
-                .as_ref()
-                .and_then(|vecs| vecs.get(i))
-                .map(|v| vec![EmbeddingRecord { vector: v.clone() }])
-                .unwrap_or_default();
+            let emb_records: Vec<EmbeddingRecord> = if let Some(text_idx) = batch_to_text_idx[i] {
+                embeddings
+                    .as_ref()
+                    .and_then(|vecs| vecs.get(text_idx))
+                    .map(|v| vec![EmbeddingRecord { vector: v.clone() }])
+                    .unwrap_or_default()
+            } else {
+                Vec::new() // No embedding for empty text
+            };
 
             let doc = DocumentRecord {
                 path:       &item.path,

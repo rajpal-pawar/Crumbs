@@ -154,11 +154,13 @@ export default function App() {
         e.preventDefault();
         setSelectedIndex(prev => (prev > 0 ? prev - 1 : prev > -1 ? -1 : prev));
       } else if (e.key === 'Enter') {
-        if (selectedIndex >= 0 && selectedIndex < hits.length) {
+        // If they haven't explicitly navigated down but there are hits, default to the first hit.
+        const targetIdx = selectedIndex >= 0 ? selectedIndex : (hits.length > 0 ? 0 : -1);
+        if (targetIdx >= 0 && targetIdx < hits.length) {
           e.preventDefault();
-          console.info('[Crumbs] open:', hits[selectedIndex].path);
+          console.info('[Crumbs] open:', hits[targetIdx].path);
           import('@tauri-apps/api/core').then(({ invoke }) => {
-            invoke('open_file', { path: hits[selectedIndex].path }).catch(console.error);
+            invoke('open_file', { path: hits[targetIdx].path }).catch(console.error);
           });
         }
       }

@@ -116,9 +116,21 @@ pub fn upsert(
         )
         .map_err(DbError::Rusqlite)?;
 
-        let mut stmt = tx
+        tx.execute(
+            "DELETE FROM embeddings_images WHERE doc_id = ?1",
+            rusqlite::params![doc_id],
+        )
+        .map_err(DbError::Rusqlite)?;
+
+        let mut stmt_text = tx
             .prepare(
                 "INSERT INTO embeddings (embedding, doc_id, dim) VALUES (?1, ?2, ?3)",
+            )
+            .map_err(DbError::Rusqlite)?;
+
+        let mut stmt_image = tx
+            .prepare(
+                "INSERT INTO embeddings_images (embedding, doc_id, dim) VALUES (?1, ?2, ?3)",
             )
             .map_err(DbError::Rusqlite)?;
 
@@ -126,8 +138,14 @@ pub fn upsert(
             let dim = emb.vector.len() as i64;
             // zerocopy: Vec<f32> → &[u8], zero allocation.
             let blob: &[u8] = emb.vector.as_bytes();
-            stmt.execute(rusqlite::params![blob, doc_id, dim])
-                .map_err(DbError::Rusqlite)?;
+
+            if dim == 384 {
+                stmt_text.execute(rusqlite::params![blob, doc_id, dim])
+                    .map_err(DbError::Rusqlite)?;
+            } else if dim == 512 {
+                stmt_image.execute(rusqlite::params![blob, doc_id, dim])
+                    .map_err(DbError::Rusqlite)?;
+            }
         }
 
         debug!(doc_id, count = embeddings.len(), "embeddings written");
@@ -177,6 +195,12 @@ pub fn delete(tx: &Transaction, path: &Path) -> Result<bool, DbError> {
     // Clean embeddings.
     tx.execute(
         "DELETE FROM embeddings WHERE doc_id = ?1",
+        rusqlite::params![doc_id],
+    )
+    .map_err(DbError::Rusqlite)?;
+
+    tx.execute(
+        "DELETE FROM embeddings_images WHERE doc_id = ?1",
         rusqlite::params![doc_id],
     )
     .map_err(DbError::Rusqlite)?;

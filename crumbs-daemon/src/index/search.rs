@@ -79,7 +79,8 @@ pub struct SearchQuery<'a> {
     /// Optional pre-computed query embedding for vector search.
     /// Pass `None` to skip the vector search leg (e.g. if ONNX is not yet
     /// loaded).
-    pub embedding: Option<&'a [f32]>,
+    pub text_embedding: Option<&'a [f32]>,
+    pub image_embedding: Option<&'a [f32]>,
 
     /// Maximum number of results to return.
     pub limit: usize,
@@ -89,10 +90,11 @@ pub struct SearchQuery<'a> {
 }
 
 impl<'a> SearchQuery<'a> {
-    pub fn new(text: &'a str, embedding: Option<&'a [f32]>, limit: usize) -> Self {
+    pub fn new(text: &'a str, text_embedding: Option<&'a [f32]>, image_embedding: Option<&'a [f32]>, limit: usize) -> Self {
         SearchQuery {
             text,
-            embedding,
+            text_embedding,
+            image_embedding,
             limit,
             rrf_k: 60.0,
         }
@@ -140,27 +142,34 @@ pub fn search(conn: &Connection, query: &SearchQuery<'_>) -> Result<Vec<SearchHi
     // ------------------------------------------------------------------
     // Leg 2: Vector ANN search via sqlite-vec
     // ------------------------------------------------------------------
-    let vec_found = if let Some(emb) = query.embedding {
-        let vec_hits = run_vector(conn, emb, query.limit * 2)?;
-        let found = !vec_hits.is_empty();
+    let vec_found = if query.text_embedding.is_some() || query.image_embedding.is_some() {
+        match run_vector(conn, query.text_embedding, query.image_embedding, query.limit * 2) {
+            Ok(vec_hits) => {
+                let found = !vec_hits.is_empty();
 
-        for (rank_0based, hit) in vec_hits.into_iter().enumerate() {
-            // Cast rank to f32 before division — same guard as above.
-            let rank = (rank_0based + 1) as f32;
-            let contribution = 1.0_f32 / (query.rrf_k + rank);
+                for (rank_0based, hit) in vec_hits.into_iter().enumerate() {
+                    // Cast rank to f32 before division — same guard as above.
+                    let rank = (rank_0based + 1) as f32;
+                    let contribution = 1.0_f32 / (query.rrf_k + rank);
 
-            let entry = pool.entry(hit.doc_id).or_insert_with(|| CandidateEntry {
-                path:    hit.path,
-                title:   hit.title,
-                snippet: None,
-                rrf:     0.0,
-                sources: HitSources::default(),
-            });
-            entry.rrf += contribution;
-            entry.sources.vector = true;
+                    let entry = pool.entry(hit.doc_id).or_insert_with(|| CandidateEntry {
+                        path:    hit.path,
+                        title:   hit.title,
+                        snippet: None,
+                        rrf:     0.0,
+                        sources: HitSources::default(),
+                    });
+                    entry.rrf += contribution;
+                    entry.sources.vector = true;
+                }
+
+                found
+            }
+            Err(e) => {
+                warn!(error = %e, "vector search failed — continuing with BM25 results only");
+                false
+            }
         }
-
-        found
     } else {
         debug!("vector search skipped — no query embedding provided");
         false
@@ -295,47 +304,108 @@ fn run_bm25(conn: &Connection, text: &str, limit: usize) -> Result<Vec<RawHit>, 
 
 /// Run sqlite-vec ANN (approximate nearest neighbour) search.
 /// Returns up to `limit` rows ordered by vector distance (ascending = closest).
+///
+/// sqlite-vec `vec0` KNN query syntax:
+/// ```sql
+/// SELECT rowid, distance FROM embeddings
+///   WHERE embedding MATCH ?1 AND k = ?2;
+/// ```
+/// The virtual table provides a hidden `distance` column automatically when
+/// using MATCH.  We query vec0 alone (no JOINs — vec0 doesn't support them
+/// in KNN mode) and then resolve doc_id → path in a second step.
 fn run_vector(
     conn: &Connection,
-    embedding: &[f32],
+    text_embedding: Option<&[f32]>,
+    image_embedding: Option<&[f32]>,
     limit: usize,
 ) -> Result<Vec<RawHit>, DbError> {
-    // Cast &[f32] → &[u8] for the blob parameter.
-    let blob: &[u8] = embedding.as_bytes();
+    let mut knn_results: Vec<(i64, f64)> = Vec::new();
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT e.doc_id, d.path,
-                    vec_distance_L2(e.embedding, ?1) AS dist
-             FROM embeddings e
-             JOIN documents d ON d.id = e.doc_id
-             WHERE e.embedding MATCH ?1
-               AND k = ?2
-             ORDER BY dist ASC",
-        )
-        .map_err(DbError::Rusqlite)?;
+    // Query A: Text table
+    if let Some(emb) = text_embedding {
+        let blob: &[u8] = emb.as_bytes();
+        let mut stmt = conn
+            .prepare(
+                "SELECT doc_id, distance
+                 FROM embeddings
+                 WHERE embedding MATCH ?1
+                   AND k = ?2",
+            )
+            .map_err(DbError::Rusqlite)?;
 
-    let hits = stmt
-        .query_map(
-            rusqlite::params![blob, limit as i64],
-            |row| {
-                let path: String = row.get(1)?;
-                let title = std::path::Path::new(&path)
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned();
-                Ok(RawHit {
-                    doc_id:  row.get(0)?,
-                    path,
-                    title,
-                    snippet: None, // vector search doesn't produce text snippets
-                })
-            },
-        )
-        .map_err(DbError::Rusqlite)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(DbError::Rusqlite)?;
+        let hits = stmt
+            .query_map(
+                rusqlite::params![blob, limit as i64],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?)),
+            )
+            .map_err(DbError::Rusqlite)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(DbError::Rusqlite)?;
+        knn_results.extend(hits);
+    }
+
+    // Query B: Images table
+    if let Some(emb) = image_embedding {
+        let blob: &[u8] = emb.as_bytes();
+        let mut stmt = conn
+            .prepare(
+                "SELECT doc_id, distance
+                 FROM embeddings_images
+                 WHERE embedding MATCH ?1
+                   AND k = ?2",
+            )
+            .map_err(DbError::Rusqlite)?;
+
+        let hits = stmt
+            .query_map(
+                rusqlite::params![blob, limit as i64],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?)),
+            )
+            .map_err(DbError::Rusqlite)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(DbError::Rusqlite)?;
+        knn_results.extend(hits);
+    }
+
+    // Combine and sort by distance ASC (closest matches first)
+    knn_results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Deduplicate in case a doc_id somehow matched both
+    let mut unique_results = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (doc_id, dist) in knn_results {
+        if !seen.contains(&doc_id) {
+            seen.insert(doc_id);
+            unique_results.push((doc_id, dist));
+        }
+    }
+
+    unique_results.truncate(limit);
+
+    // Step 2: Resolve doc_id → path from the documents table.
+    let mut hits = Vec::with_capacity(unique_results.len());
+    for (doc_id, _distance) in unique_results {
+        let path: String = conn
+            .query_row(
+                "SELECT path FROM documents WHERE id = ?1",
+                rusqlite::params![doc_id],
+                |row| row.get(0),
+            )
+            .unwrap_or_default();
+
+        let title = std::path::Path::new(&path)
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+
+        hits.push(RawHit {
+            doc_id,
+            path,
+            title,
+            snippet: None, // vector search doesn't produce text snippets
+        });
+    }
 
     debug!(count = hits.len(), "vector ANN hits");
     Ok(hits)
@@ -399,9 +469,26 @@ fn run_like_fallback(
 /// query in double-quotes to treat it as a phrase query, escaping any
 /// embedded double-quotes.
 fn escape_fts5(text: &str) -> String {
-    // Replace every `"` with `""` (FTS5 double-quote escape).
-    let escaped = text.replace('"', "\"\"");
-    format!("\"{}\"", escaped)
+    // 1. Convert all non-alphanumeric characters to spaces to avoid syntax errors.
+    let safe_text: String = text
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect();
+
+    // 2. Split into terms, wrap each in quotes, and join with OR.
+    // This allows BM25 to match documents containing ANY of the words,
+    // rather than requiring EVERY word (which is the FTS5 default).
+    let terms: Vec<String> = safe_text
+        .split_whitespace()
+        .filter(|t| !t.is_empty())
+        .map(|term| format!("\"{}\"", term))
+        .collect();
+
+    if terms.is_empty() {
+        return String::new();
+    }
+
+    terms.join(" OR ")
 }
 
 // ---------------------------------------------------------------------------
@@ -433,12 +520,12 @@ mod tests {
     #[test]
     fn test_escape_fts5_quotes() {
         let escaped = escape_fts5(r#"hello "world""#);
-        assert_eq!(escaped, r#""hello ""world"""#);
+        assert_eq!(escaped, r#""hello" OR "world""#);
     }
 
     #[test]
     fn test_escape_fts5_plain() {
         let escaped = escape_fts5("rust async");
-        assert_eq!(escaped, r#""rust async""#);
+        assert_eq!(escaped, r#""rust" OR "async""#);
     }
 }

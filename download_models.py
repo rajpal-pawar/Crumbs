@@ -35,10 +35,22 @@ DOWNLOADS = [
         "size_hint": "~23 MB",
     },
     {
-        "url":      "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx/model_quantized.onnx",
-        "filename": "clip-vit-b32-int8.onnx",
+        "url":      "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx/vision_model_quantized.onnx",
+        "filename": "clip-vision-int8.onnx",
         "desc":     "CLIP ViT-B/32 INT8 visual encoder",
         "size_hint": "~87 MB",
+    },
+    {
+        "url":      "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx/text_model_quantized.onnx",
+        "filename": "clip-text-int8.onnx",
+        "desc":     "CLIP ViT-B/32 INT8 text encoder (For searching images)",
+        "size_hint": "~60 MB",
+    },
+    {
+        "url":      "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/tokenizer.json",
+        "filename": "clip-tokenizer.json",
+        "desc":     "CLIP tokenizer",
+        "size_hint": "~1 MB",
     },
 ]
 
