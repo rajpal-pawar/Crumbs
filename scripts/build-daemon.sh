@@ -9,8 +9,8 @@
 #
 # Tauri's externalBin convention:
 #   The binary must live at:
-#     src-tauri/binaries/crumbs-daemon-<target-triple>
-#   e.g. src-tauri/binaries/crumbs-daemon-x86_64-unknown-linux-gnu
+#     src-tauri/bin/crumbs-daemon-<target-triple>
+#   e.g. src-tauri/bin/crumbs-daemon-x86_64-unknown-linux-gnu
 #
 # Exit codes:
 #   0  — success
@@ -29,6 +29,10 @@ BUILD_MODE="release"
 CARGO_FLAGS="--release"
 for arg in "$@"; do
     case "$arg" in
+        --release)
+            BUILD_MODE="release"
+            CARGO_FLAGS="--release"
+            ;;
         --debug)
             BUILD_MODE="debug"
             CARGO_FLAGS=""
@@ -54,17 +58,22 @@ echo "==> Building crumbs-daemon (mode=$BUILD_MODE, target=$TARGET)"
 # --------------------------------------------------------------------------- #
 cd "$ROOT_DIR"
 # shellcheck disable=SC2086
-cargo build -p crumbs-daemon $CARGO_FLAGS --target "$TARGET" 2>&1
+cargo build $CARGO_FLAGS --bin crumbs-daemon 2>&1
 
-SRC_BIN="$ROOT_DIR/target/$TARGET/$BUILD_MODE/crumbs-daemon"
+SRC_BIN="$ROOT_DIR/target/$BUILD_MODE/crumbs-daemon"
 DST_DIR="$ROOT_DIR/src-tauri/binaries"
 DST_BIN="$DST_DIR/crumbs-daemon-$TARGET"
+
+if [[ "$TARGET" == *"windows"* ]]; then
+    SRC_BIN="${SRC_BIN}.exe"
+    DST_BIN="${DST_BIN}.exe"
+fi
 
 mkdir -p "$DST_DIR"
 
 echo "==> Copying binary"
 echo "    $SRC_BIN"
 echo "    → $DST_BIN"
-cp "$SRC_BIN" "$DST_BIN" || { echo "ERROR: copy failed" >&2; exit 2; }
+cp -f "$SRC_BIN" "$DST_BIN" || { echo "ERROR: copy failed" >&2; exit 2; }
 
 echo "==> Done — sidecar ready at: $DST_BIN"

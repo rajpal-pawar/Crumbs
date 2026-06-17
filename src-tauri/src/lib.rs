@@ -85,6 +85,7 @@ pub fn run() {
             commands::status,
             commands::reindex,
             commands::open_file,
+            commands::update_engine_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");

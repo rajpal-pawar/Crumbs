@@ -38,7 +38,7 @@ use image::DynamicImage;
 use serde_json::json;
 use tracing::{debug, info, warn};
 
-use crate::config::Config;
+use crate::config::{AtomicConfig, Config, DirState, DirStatusRegistry};
 use crate::embed;
 use crate::extractor::{self, Extracted};
 use crate::index::{
@@ -47,6 +47,41 @@ use crate::index::{
     Database,
 };
 use crate::ipc::{Request, Response};
+
+// ---------------------------------------------------------------------------
+// update_config (synchronous — no spawn_blocking needed)
+// ---------------------------------------------------------------------------
+
+/// Handle an `update_config` request.
+///
+/// Params: `{ "batch_size": <int>, "threads": <int> }`.
+/// Both fields are optional; only provided fields are updated.
+///
+/// The atomic values are updated in-place — the indexing loop reads them
+/// on the next batch iteration with no restart.
+pub fn handle_update_config(
+    req: Request,
+    atomic_config: &Arc<AtomicConfig>,
+) -> Response {
+    if let Some(bs) = req.params.get("batch_size").and_then(|v| v.as_u64()) {
+        atomic_config.set_batch_size(bs as usize);
+    }
+    if let Some(t) = req.params.get("threads").and_then(|v| v.as_i64()) {
+        atomic_config.set_threads(t as i16);
+    }
+    info!(
+        batch_size = atomic_config.batch_size(),
+        threads = atomic_config.threads(),
+        "engine config updated"
+    );
+    Response::success(
+        req.id,
+        json!({
+            "batch_size": atomic_config.batch_size(),
+            "threads": atomic_config.threads(),
+        }),
+    )
+}
 
 // ---------------------------------------------------------------------------
 // search
@@ -264,12 +299,20 @@ pub fn run_reindex_pipeline_internal(
     let (path_tx, path_rx) = std::sync::mpsc::sync_channel::<PathBuf>(1000);
     
     let scanned = Arc::new(AtomicU64::new(0));
+
+    // Create a directory status registry for per-directory state tracking.
+    let dir_registry = Arc::new(DirStatusRegistry::new(&config.watch_dirs));
     
     let producer_scanned = Arc::clone(&scanned);
+    let producer_registry = Arc::clone(&dir_registry);
     let config_clone = Arc::clone(config);
     let producer = std::thread::spawn(move || {
         for dir in &config_clone.watch_dirs {
             if !dir.exists() { continue; }
+
+            // Transition directory to Scanning state.
+            producer_registry.set_state(dir, DirState::Scanning);
+
             let walker = walkdir::WalkDir::new(dir)
                 .into_iter()
                 .filter_entry(|e| {
@@ -277,19 +320,26 @@ pub fn run_reindex_pipeline_internal(
                     if e.file_type().is_dir() {
                         !matches!(
                             name.as_str(),
-                            "node_modules" | "target" | ".git" | ".cache" | "appdata" | "temp" | "windows" | "system32" | "usr" | "bin" | "lib" | "snap" | "flatpak" | "pictures" | "videos" | "music"
+                            "node_modules" | "target" | ".git" | ".cache" | "appdata" | "temp" | "windows" | "system32" | "usr" | "bin" | "lib" | "snap" | "flatpak" | "pictures" | "videos" | "music" | "venv" | ".venv" | "env" | ".env" | "__pycache__" | "build" | "dist" | ".vscode" | ".idea"
                         )
                     } else {
                         true
                     }
-                })
-                .filter_map(|e| e.ok())
-                .filter(|e| e.file_type().is_file());
+                });
 
-            for entry in walker {
+            for entry_res in walker {
+                let entry = match entry_res {
+                    Ok(e) => e,
+                    Err(_) => continue, // Explicitly ignore PermissionDenied or unreadable folders
+                };
+
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+
                 let path = entry.path().to_path_buf();
                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-                if !matches!(ext.as_str(), "txt" | "md" | "pdf" | "png" | "jpg" | "jpeg") {
+                if !matches!(ext.as_str(), "txt" | "md" | "pdf" | "png" | "jpg" | "jpeg" | "py" | "c" | "cpp" | "h" | "hpp" | "rs" | "js" | "ts" | "jsx" | "tsx" | "html" | "css" | "json" | "toml" | "yaml" | "yml" | "java" | "go" | "sh" | "bash" | "zsh") {
                     continue;
                 }
                 producer_scanned.fetch_add(1, Ordering::Relaxed);
@@ -297,23 +347,39 @@ pub fn run_reindex_pipeline_internal(
                     break;
                 }
             }
+
+            // Transition directory to Indexing state (file discovery complete for this dir).
+            producer_registry.set_state(dir, DirState::Indexing);
         }
+
+        // After all directories have been walked, mark any still in Indexing
+        // as Completed (the consumer will handle final flush).
+        // Note: we only mark Scanning→Indexing here; Completed happens after
+        // the consumer finishes processing all files from this dir.
     });
 
     let config_clone = Arc::clone(config);
     let db_clone = Arc::clone(db);
     let consumer_scanned = Arc::clone(&scanned);
+    let consumer_registry = Arc::clone(&dir_registry);
     
     let consumer = std::thread::spawn(move || {
         let mut stats = ReindexStats::default();
-        let mut text_batch = Vec::with_capacity(config_clone.embed_batch_size);
-        let mut image_batch = Vec::with_capacity(config_clone.embed_batch_size);
+        let batch_size = config_clone.embed_batch_size;
+        let mut text_batch = Vec::with_capacity(batch_size);
+        let mut image_batch = Vec::with_capacity(batch_size);
         
         let rt_handle = tokio::runtime::Handle::try_current().ok();
 
-        let report_progress = |stats: &ReindexStats, writer_opt: &Option<SharedWriter>, scanned_arc: &Arc<AtomicU64>, rt: &Option<tokio::runtime::Handle>| {
+        let report_progress = |stats: &ReindexStats, writer_opt: &Option<SharedWriter>, scanned_arc: &Arc<AtomicU64>, rt: &Option<tokio::runtime::Handle>, registry: &Arc<DirStatusRegistry>| {
+            let s = scanned_arc.load(Ordering::Relaxed);
+            let dir_snapshot = registry.snapshot();
+            let dirs_json: Vec<serde_json::Value> = dir_snapshot.iter().map(|d| {
+                json!({"path": d.path, "state": d.state})
+            }).collect();
+            println!("{}", serde_json::json!({"status": "indexing", "indexed": stats.indexed, "total": s, "directories": dirs_json}));
+
             if let (Some(w), Some(h)) = (writer_opt, rt) {
-                let s = scanned_arc.load(Ordering::Relaxed);
                 let w = w.clone();
                 let event = serde_json::json!({
                     "method": "progress",
@@ -367,14 +433,14 @@ pub fn run_reindex_pipeline_internal(
             }
 
             let mut flushed = false;
-            if text_batch.len() >= config_clone.embed_batch_size {
+            if text_batch.len() >= batch_size {
                 if flush_text_batch(&mut text_batch, &config_clone, &db_clone, &mut stats).is_err() {
                     stats.errors += text_batch.len() as u64;
                     text_batch.clear();
                 }
                 flushed = true;
             }
-            if image_batch.len() >= config_clone.embed_batch_size {
+            if image_batch.len() >= batch_size {
                 if flush_image_batch(&mut image_batch, &config_clone, &db_clone, &mut stats).is_err() {
                     stats.errors += image_batch.len() as u64;
                     image_batch.clear();
@@ -383,7 +449,7 @@ pub fn run_reindex_pipeline_internal(
             }
 
             if flushed {
-                report_progress(&stats, &writer, &consumer_scanned, &rt_handle);
+                report_progress(&stats, &writer, &consumer_scanned, &rt_handle, &consumer_registry);
             }
         }
 
@@ -398,7 +464,7 @@ pub fn run_reindex_pipeline_internal(
         }
         
         if final_flushed {
-            report_progress(&stats, &writer, &consumer_scanned, &rt_handle);
+            report_progress(&stats, &writer, &consumer_scanned, &rt_handle, &consumer_registry);
         }
 
         stats.scanned = consumer_scanned.load(Ordering::Relaxed);
@@ -406,7 +472,19 @@ pub fn run_reindex_pipeline_internal(
     });
 
     let _ = producer.join();
+
+    // Mark all directories as Completed now that the producer is done.
+    for dir in &config.watch_dirs {
+        dir_registry.set_state(dir, DirState::Completed);
+    }
+
     let stats = consumer.join().map_err(|_| "Consumer thread panicked".to_string())?;
+
+    // Emit a final progress event with all directories completed.
+    let final_dirs: Vec<serde_json::Value> = dir_registry.snapshot().iter().map(|d| {
+        json!({"path": d.path, "state": d.state})
+    }).collect();
+    println!("{}", serde_json::json!({"status": "completed", "indexed": stats.indexed, "total": stats.scanned, "directories": final_dirs}));
 
     Ok(stats)
 }
@@ -430,11 +508,11 @@ struct PendingItem {
 // ---------------------------------------------------------------------------
 
 #[derive(Default)]
-struct ReindexStats {
-    scanned: u64,
-    indexed: u64,
-    skipped: u64,
-    errors:  u64,
+pub struct ReindexStats {
+    pub scanned: u64,
+    pub indexed: u64,
+    pub skipped: u64,
+    pub errors:  u64,
 }
 
 /// Embed a text batch and commit all upserts in a single transaction.

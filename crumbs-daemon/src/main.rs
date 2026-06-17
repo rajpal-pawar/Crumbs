@@ -72,6 +72,7 @@ async fn main() {
                 max_file_bytes = cfg.max_file_bytes,
                 "configuration loaded"
             );
+            info!("[CRITICAL STARTUP] Resolving watch directory to: {:?}", cfg.watch_dirs);
             cfg
         }
         Err(e) => {
@@ -126,7 +127,7 @@ async fn main() {
     // 6. IPC run-loop and Crawler
     // -----------------------------------------------------------------------
     info!("entering IPC run-loop");
-    let crawl_config = config.clone();
+    let crawl_config = Arc::new(config.clone());
     let crawl_db = Arc::clone(&db);
 
     let ipc_handle = tokio::spawn(async move {
@@ -140,7 +141,7 @@ async fn main() {
     tokio::spawn(async move {
         info!("Performing initial scan of watch_dirs in background...");
         let _ = tokio::task::spawn_blocking({
-            let crawl_config = crawl_config.clone();
+            let crawl_config = Arc::clone(&crawl_config);
             let crawl_db = Arc::clone(&crawl_db);
             move || {
                 if let Err(e) = handlers::run_reindex_pipeline(&crawl_config, &crawl_db) {
@@ -171,17 +172,15 @@ async fn main() {
             }
         };
 
-        let watch_dir = dirs::home_dir()
-            .map(|mut p| { p.push("Crumbs"); p.push("data"); p })
-            .unwrap_or_else(|| std::path::PathBuf::from("/var/lib/crumbs/data"));
-            
-        std::fs::create_dir_all(&watch_dir).ok();
-
-        if watch_dir.exists() {
-            if let Err(e) = watcher.watch(&watch_dir, RecursiveMode::Recursive) {
-                warn!(path = %watch_dir.display(), error = %e, "failed to watch directory");
-            } else {
-                info!(path = %watch_dir.display(), "watching directory for changes");
+        for dir in &crawl_config.watch_dirs {
+            if dir.exists() {
+                // Warning: watching the entire home directory recursively can hit OS limits (e.g. inotify on Linux).
+                // However, user requested removing the Crumbs/data restriction.
+                if let Err(e) = watcher.watch(dir, RecursiveMode::NonRecursive) {
+                    warn!(path = %dir.display(), error = %e, "failed to watch directory");
+                } else {
+                    info!(path = %dir.display(), "watching directory for changes (non-recursive)");
+                }
             }
         }
 

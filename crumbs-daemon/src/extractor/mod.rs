@@ -122,7 +122,7 @@ const TEXT_EXTENSIONS: &[&str] = &[
     "cs",  "rb", "php", "sh",  "bat", "ps1",
     "toml", "yaml", "yml", "json", "xml", "html", "htm", "css",
     "csv",  "tsv",  "log", "ini", "cfg", "conf",
-    "tex", "bib", "pdf",
+    "tex", "bib", "pdf", "bash", "zsh",
 ];
 
 /// Extensions we treat as images and route to the CLIP stub.
@@ -154,7 +154,7 @@ pub fn extract(path: &Path, config: &Config) -> Result<Option<Extracted>, Extrac
         .to_ascii_lowercase();
 
     if TEXT_EXTENSIONS.contains(&ext.as_str()) {
-        extract_text(path, config).map(Some)
+        extract_text(path, config)
     } else if IMAGE_EXTENSIONS.contains(&ext.as_str()) {
         extract_image(path).map(Some)
     } else {
@@ -164,7 +164,7 @@ pub fn extract(path: &Path, config: &Config) -> Result<Option<Extracted>, Extrac
             Ok(None)
         } else {
             // Unknown text-like file — attempt text extraction.
-            extract_text(path, config).map(Some)
+            extract_text(path, config)
         }
     }
 }
@@ -195,7 +195,7 @@ fn chunk_text(text: &str) -> Vec<String> {
     chunks
 }
 
-fn extract_text(path: &Path, config: &Config) -> Result<Extracted, ExtractError> {
+fn extract_text(path: &Path, config: &Config) -> Result<Option<Extracted>, ExtractError> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -203,7 +203,7 @@ fn extract_text(path: &Path, config: &Config) -> Result<Extracted, ExtractError>
         .to_ascii_lowercase();
 
     if ext == "pdf" {
-        return extract_pdf(path, config);
+        return extract_pdf(path, config).map(Some);
     }
 
     let file = File::open(path).map_err(ExtractError::Io)?;
@@ -224,12 +224,21 @@ fn extract_text(path: &Path, config: &Config) -> Result<Extracted, ExtractError>
 
     let checksum = hex::encode(hasher.finalize());
 
-    // Convert to UTF-8, replacing invalid sequences rather than erroring.
-    let body = String::from_utf8_lossy(&body_buf).into_owned();
+    let body = match String::from_utf8(body_buf) {
+        Ok(s) => s,
+        Err(_) => {
+            debug!(path = %path.display(), "skipping file with invalid UTF-8");
+            return Ok(None);
+        }
+    };
 
-    let mime_type = mime_guess::from_path(path)
+    let mut mime_type = mime_guess::from_path(path)
         .first_or_text_plain()
         .to_string();
+
+    if mime_type == "application/octet-stream" && TEXT_EXTENSIONS.contains(&ext.as_str()) {
+        mime_type = "text/plain".to_string();
+    }
 
     debug!(
         path = %path.display(),
@@ -239,7 +248,7 @@ fn extract_text(path: &Path, config: &Config) -> Result<Extracted, ExtractError>
 
     let chunks = chunk_text(&body);
 
-    Ok(Extracted::Text { chunks, checksum, mime_type })
+    Ok(Some(Extracted::Text { chunks, checksum, mime_type }))
 }
 
 // ---------------------------------------------------------------------------

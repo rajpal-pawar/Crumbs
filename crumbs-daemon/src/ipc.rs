@@ -32,7 +32,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
-use crate::config::Config;
+use crate::config::{Config, AtomicConfig};
 use crate::handlers;
 use crate::index::Database;
 
@@ -112,6 +112,7 @@ pub type SharedWriter = Arc<Mutex<tokio::io::Stdout>>;
 /// Returns on unrecoverable I/O failure.  A malformed JSON line is logged and
 /// skipped — it does not terminate the loop.
 pub async fn run_loop(config: Config, db: Arc<Database>) -> Result<(), IpcError> {
+    let atomic_config = Arc::new(AtomicConfig::new(config.clone()));
     let config = Arc::new(config);
     // db is already Arc<Database> — no re-wrap needed.
 
@@ -149,8 +150,9 @@ pub async fn run_loop(config: Config, db: Arc<Database>) -> Result<(), IpcError>
                 let writer = Arc::clone(&writer);
                 let config = Arc::clone(&config);
                 let db     = Arc::clone(&db);
+                let atomic = Arc::clone(&atomic_config);
                 tokio::spawn(async move {
-                    dispatch(request, config, db, writer).await;
+                    dispatch(request, config, db, writer, atomic).await;
                 });
             }
 
@@ -174,7 +176,7 @@ pub async fn run_loop(config: Config, db: Arc<Database>) -> Result<(), IpcError>
 // Request dispatcher
 // ---------------------------------------------------------------------------
 
-async fn dispatch(req: Request, config: Arc<Config>, db: Arc<Database>, writer: SharedWriter) {
+async fn dispatch(req: Request, config: Arc<Config>, db: Arc<Database>, writer: SharedWriter, atomic_config: Arc<AtomicConfig>) {
     let id = req.id.clone();
     let method = req.method.as_str();
 
@@ -187,6 +189,9 @@ async fn dispatch(req: Request, config: Arc<Config>, db: Arc<Database>, writer: 
         }
         "reindex" => {
             handlers::handle_reindex(req, &config, &db, writer.clone()).await
+        }
+        "update_config" => {
+            handlers::handle_update_config(req, &atomic_config)
         }
         unknown => {
             warn!(method = %unknown, "unknown IPC method");

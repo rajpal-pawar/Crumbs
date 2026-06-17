@@ -9,6 +9,11 @@
 //! Files larger than [`Config::max_file_bytes`] are skipped with a warning
 //! during indexing.
 //!
+//! # Dynamic configuration
+//! [`AtomicConfig`] wraps the hot-path tuning knobs (`embed_batch_size`,
+//! `onnx_intra_threads`) in atomics so the frontend can update them at
+//! runtime without restarting the daemon.
+//!
 //! # Data directories
 //! | Platform | Default path |
 //! |---|---|
@@ -17,6 +22,10 @@
 //! | macOS    | `~/Library/Application Support/crumbs` |
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, AtomicI16, Ordering};
+use std::sync::{Arc, RwLock};
+use serde::{Deserialize, Serialize};
+use tracing::info;
 
 /// 15 MB — files above this limit are skipped during indexing.
 ///
@@ -58,6 +67,142 @@ pub struct Config {
     pub index_parallelism: usize,
 }
 
+// ---------------------------------------------------------------------------
+// Atomic runtime configuration (hot-path knobs)
+// ---------------------------------------------------------------------------
+
+/// Thread-safe wrapper around the tuning parameters that the frontend can
+/// update via the `update_engine_config` Tauri command.  The indexing loops
+/// read these atomics on every batch iteration, so changes take effect
+/// immediately without restarting the daemon.
+pub struct AtomicConfig {
+    pub embed_batch_size: AtomicUsize,
+    pub onnx_intra_threads: AtomicI16,
+    pub index_parallelism: AtomicUsize,
+    /// The base (immutable) config for paths, limits, etc.
+    pub base: Config,
+}
+
+impl AtomicConfig {
+    pub fn new(config: Config) -> Self {
+        AtomicConfig {
+            embed_batch_size: AtomicUsize::new(config.embed_batch_size),
+            onnx_intra_threads: AtomicI16::new(config.onnx_intra_threads),
+            index_parallelism: AtomicUsize::new(config.index_parallelism),
+            base: config,
+        }
+    }
+
+    pub fn batch_size(&self) -> usize {
+        self.embed_batch_size.load(Ordering::Relaxed)
+    }
+
+    pub fn threads(&self) -> i16 {
+        self.onnx_intra_threads.load(Ordering::Relaxed)
+    }
+
+    pub fn set_batch_size(&self, val: usize) {
+        let clamped = val.clamp(1, 50);
+        self.embed_batch_size.store(clamped, Ordering::Relaxed);
+        info!("batch_size updated to {}", clamped);
+    }
+
+    pub fn set_threads(&self, val: i16) {
+        let clamped = val.clamp(1, 16);
+        self.onnx_intra_threads.store(clamped, Ordering::Relaxed);
+        info!("onnx_intra_threads updated to {}", clamped);
+    }
+}
+
+impl std::fmt::Debug for AtomicConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AtomicConfig")
+            .field("embed_batch_size", &self.batch_size())
+            .field("onnx_intra_threads", &self.threads())
+            .finish()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-directory state tracking
+// ---------------------------------------------------------------------------
+
+/// Lifecycle state of a single watched root directory during indexing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DirState {
+    Queued,
+    Scanning,
+    Indexing,
+    Completed,
+}
+
+impl std::fmt::Display for DirState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DirState::Queued    => write!(f, "queued"),
+            DirState::Scanning  => write!(f, "scanning"),
+            DirState::Indexing  => write!(f, "indexing"),
+            DirState::Completed => write!(f, "completed"),
+        }
+    }
+}
+
+/// Status entry for a single watched directory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirStatus {
+    pub path: String,
+    pub state: DirState,
+}
+
+/// Thread-safe directory status registry.
+/// The producer thread updates individual entries; the progress reporter
+/// reads a snapshot for the JSON payload.
+pub struct DirStatusRegistry {
+    dirs: RwLock<Vec<DirStatus>>,
+}
+
+impl DirStatusRegistry {
+    /// Create a new registry pre-populated with all watch dirs in `Queued` state.
+    pub fn new(watch_dirs: &[PathBuf]) -> Self {
+        let dirs = watch_dirs
+            .iter()
+            .map(|p| DirStatus {
+                path: Self::display_path(p),
+                state: DirState::Queued,
+            })
+            .collect();
+        DirStatusRegistry {
+            dirs: RwLock::new(dirs),
+        }
+    }
+
+    /// Update the state of a specific directory by path.
+    pub fn set_state(&self, path: &PathBuf, state: DirState) {
+        let display = Self::display_path(path);
+        if let Ok(mut dirs) = self.dirs.write() {
+            if let Some(entry) = dirs.iter_mut().find(|d| d.path == display) {
+                entry.state = state;
+            }
+        }
+    }
+
+    /// Take a snapshot of all directory statuses for JSON serialisation.
+    pub fn snapshot(&self) -> Vec<DirStatus> {
+        self.dirs.read().map(|d| d.clone()).unwrap_or_default()
+    }
+
+    /// Convert a PathBuf to a tilde-prefixed display string.
+    fn display_path(p: &PathBuf) -> String {
+        if let Some(home) = dirs::home_dir() {
+            if let Ok(suffix) = p.strip_prefix(&home) {
+                return format!("~/{}", suffix.display());
+            }
+        }
+        p.display().to_string()
+    }
+}
+
 impl Config {
     /// Load configuration.
     ///
@@ -75,6 +220,9 @@ impl Config {
             }
         })?;
 
+        let watch_dirs = default_watch_dirs();
+        info!("Resolved Home Directory for indexing: {:?}", watch_dirs);
+
         Ok(Config {
             data_dir,
             max_file_bytes: MAX_FILE_BYTES,
@@ -87,7 +235,7 @@ impl Config {
             // 32 docs/batch: ~few MB peak RAM per batch, fast enough
             // amortisation of ONNX session startup (~200 ms).
             embed_batch_size: 5,
-            watch_dirs: default_watch_dirs(),
+            watch_dirs,
             index_parallelism: 1,
         })
     }
@@ -119,11 +267,11 @@ fn resolve_data_dir() -> Result<PathBuf, ConfigError> {
 }
 
 fn default_watch_dirs() -> Vec<PathBuf> {
+    let mut watch_dirs = Vec::new();
     if let Some(home) = dirs::home_dir() {
-        vec![home]
-    } else {
-        vec![PathBuf::from("/")]
+        watch_dirs.push(home);
     }
+    watch_dirs
 }
 // ---------------------------------------------------------------------------
 // Error type

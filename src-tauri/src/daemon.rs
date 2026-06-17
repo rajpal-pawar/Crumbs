@@ -37,7 +37,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, Emitter};
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::{oneshot, Mutex};
 use tracing::{debug, error, info, warn};
@@ -105,6 +105,8 @@ pub async fn launch(app: AppHandle) -> Result<(), DaemonError> {
     let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
     let pending_router = Arc::clone(&pending);
 
+    let app_handle = app.clone();
+
     // -----------------------------------------------------------------------
     // Stdout router — runs for the lifetime of the daemon.
     // -----------------------------------------------------------------------
@@ -123,21 +125,38 @@ pub async fn launch(app: AppHandle) -> Result<(), DaemonError> {
                         continue;
                     }
 
-                    debug!(raw = %line, "daemon stdout line received");
+                    // ── Intercept progress events before strict IpcResponse parsing ──
+                    // The daemon emits `{"indexed":N,"status":"indexing","total":M}`.
+                    // serde_json::json! uses BTreeMap so keys are alphabetically sorted;
+                    // a prefix check on `{"status":` fails because "indexed" sorts first.
+                    // Parse as a generic Value and check for the "status" field instead.
+                    if let Ok(generic) = serde_json::from_str::<serde_json::Value>(line) {
+                        let status_str = generic.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                        if status_str == "indexing" || status_str == "completed" {
+                            debug!("intercepted index-progress event (status={})", status_str);
+                            app_handle.emit("crumbs://index-progress", generic).ok();
+                            continue;
+                        }
 
-                    match serde_json::from_str::<Response>(line) {
-                        Ok(response) => {
-                            let id = response.id.clone();
-                            let mut map = pending_router.lock().await;
-                            if let Some(sender) = map.remove(&id) {
-                                let _ = sender.send(response);
-                            } else {
-                                warn!(id = %id, "received response for unknown request ID");
+                        // Not a progress event — try strict IpcResponse parsing.
+                        debug!(raw = %line, "daemon stdout line received");
+
+                        match serde_json::from_value::<Response>(generic) {
+                            Ok(response) => {
+                                let id = response.id.clone();
+                                let mut map = pending_router.lock().await;
+                                if let Some(sender) = map.remove(&id) {
+                                    let _ = sender.send(response);
+                                } else {
+                                    warn!(id = %id, "received response for unknown request ID");
+                                }
+                            }
+                            Err(e) => {
+                                warn!(error = %e, raw = %line, "failed to parse daemon stdout as IpcResponse");
                             }
                         }
-                        Err(e) => {
-                            warn!(error = %e, raw = %line, "failed to parse daemon stdout as NDJSON");
-                        }
+                    } else {
+                        warn!(raw = %line, "daemon stdout line is not valid JSON");
                     }
                 }
 

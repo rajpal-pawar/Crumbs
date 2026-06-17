@@ -266,3 +266,455 @@ html, body, #root {
   font-size: 11px;
   color: var(--c-text-muted);
 }
+
+/* =========================================================================
+   Gear Icon (settings trigger in search bar)
+   ========================================================================= */
+.gear-button {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  color: var(--c-text-muted);
+  cursor: pointer;
+  transition: color var(--transition), background var(--transition), transform 0.3s ease;
+}
+
+.gear-button:hover {
+  color: var(--c-text);
+  background: rgba(255,255,255,0.04);
+  transform: rotate(30deg);
+}
+
+.gear-button:active {
+  transform: rotate(60deg) scale(0.92);
+}
+
+.gear-button svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* =========================================================================
+   Dashboard Overlay & Panel
+   ========================================================================= */
+.dashboard-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(0,0,0,0.55);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  animation: fade-in 150ms ease forwards;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.dashboard-panel {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.96);
+  width: min(480px, 92vw);
+  max-height: 80vh;
+  overflow-y: auto;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: 16px;
+  box-shadow:
+    0 24px 80px rgba(0,0,0,0.8),
+    0 8px 32px rgba(0,0,0,0.5),
+    inset 0 1px 0 rgba(255,255,255,0.03);
+  animation: panel-in 200ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes panel-in {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.92); }
+  to   { opacity: 1; transform: translate(-50%, -50%) scale(1);    }
+}
+
+/* Scrollbar styling */
+.dashboard-panel::-webkit-scrollbar {
+  width: 5px;
+}
+.dashboard-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+.dashboard-panel::-webkit-scrollbar-thumb {
+  background: var(--c-border-focus);
+  border-radius: 4px;
+}
+
+/* =========================================================================
+   Dashboard Header
+   ========================================================================= */
+.dashboard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--c-border);
+}
+
+.dashboard-header__left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dashboard-header__icon {
+  width: 20px;
+  height: 20px;
+  color: var(--c-text-muted);
+}
+
+.dashboard-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--c-text);
+  letter-spacing: -0.02em;
+}
+
+.dashboard-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  color: var(--c-text-muted);
+  cursor: pointer;
+  transition: color var(--transition), background var(--transition);
+}
+
+.dashboard-close:hover {
+  color: var(--c-text);
+  background: rgba(255,255,255,0.06);
+}
+
+.dashboard-close svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* =========================================================================
+   Progress Bar
+   ========================================================================= */
+.dashboard-progress {
+  padding: 16px 24px 12px;
+}
+
+.dashboard-progress__bar {
+  height: 4px;
+  background: var(--c-border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.dashboard-progress__fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4ade80, #22d3ee);
+  border-radius: 4px;
+  transition: width 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+  min-width: 0;
+}
+
+.dashboard-progress__fill--active {
+  animation: progress-shimmer 2s ease infinite;
+  background-size: 200% 100%;
+  background-image: linear-gradient(
+    90deg,
+    #4ade80 0%,
+    #22d3ee 30%,
+    #a78bfa 60%,
+    #4ade80 100%
+  );
+}
+
+@keyframes progress-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.dashboard-progress__label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--c-text-muted);
+}
+
+.dashboard-progress__pct {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--c-text);
+  font-weight: 500;
+}
+
+/* Pulse dot */
+.pulse-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #4ade80;
+  box-shadow: 0 0 6px rgba(74, 222, 128, 0.6);
+  animation: pulse 1.5s ease infinite;
+  flex-shrink: 0;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.5; transform: scale(0.8); }
+}
+
+/* =========================================================================
+   Dashboard Sections
+   ========================================================================= */
+.dashboard-section {
+  padding: 16px 24px;
+  border-top: 1px solid var(--c-border);
+}
+
+.dashboard-section__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--c-text-muted);
+  margin-bottom: 14px;
+}
+
+.dashboard-section__title svg {
+  flex-shrink: 0;
+  color: var(--c-text-muted);
+}
+
+/* =========================================================================
+   Directory List
+   ========================================================================= */
+.dir-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dir-list__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  background: var(--c-hit-bg);
+  border-radius: var(--radius-md);
+  transition: background var(--transition);
+}
+
+.dir-list__item:hover {
+  background: var(--c-hit-hover);
+}
+
+.dir-list__path {
+  font-size: 12.5px;
+  color: var(--c-text);
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* ── Directory status badges ── */
+.dir-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.dir-badge--queued {
+  color: #9ca3af;
+  background: rgba(156,163,175,0.1);
+}
+
+.dir-badge--scanning {
+  color: #facc15;
+  background: rgba(250,204,21,0.1);
+  animation: badge-pulse 2s ease infinite;
+}
+
+.dir-badge--indexing {
+  color: #60a5fa;
+  background: rgba(96,165,250,0.1);
+  animation: badge-pulse 1.5s ease infinite;
+}
+
+.dir-badge--completed {
+  color: #4ade80;
+  background: rgba(74,222,128,0.1);
+}
+
+@keyframes badge-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.65; }
+}
+
+.dashboard-empty {
+  padding: 20px 12px;
+  text-align: center;
+}
+
+.dashboard-empty__text {
+  font-size: 12px;
+  color: var(--c-text-muted);
+}
+
+/* =========================================================================
+   Engine Controls (Sliders)
+   ========================================================================= */
+.control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.control-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.control-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  color: var(--c-text);
+  font-weight: 500;
+}
+
+.control-value {
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: #60a5fa;
+  background: rgba(96,165,250,0.08);
+  padding: 1px 8px;
+  border-radius: 4px;
+  min-width: 32px;
+  text-align: center;
+}
+
+/* ── Custom range slider ── */
+.control-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  background: var(--c-border);
+  border-radius: 4px;
+  outline: none;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.control-slider:hover {
+  background: var(--c-border-focus);
+}
+
+/* Track for Firefox */
+.control-slider::-moz-range-track {
+  height: 6px;
+  background: var(--c-border);
+  border-radius: 4px;
+}
+
+/* Thumb — WebKit */
+.control-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #60a5fa, #a78bfa);
+  border: 2px solid var(--c-surface);
+  box-shadow: 0 2px 8px rgba(96,165,250,0.4);
+  cursor: grab;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.control-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+  box-shadow: 0 2px 12px rgba(96,165,250,0.6);
+}
+
+.control-slider::-webkit-slider-thumb:active {
+  cursor: grabbing;
+  transform: scale(1.05);
+}
+
+/* Thumb — Firefox */
+.control-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #60a5fa, #a78bfa);
+  border: 2px solid var(--c-surface);
+  box-shadow: 0 2px 8px rgba(96,165,250,0.4);
+  cursor: grab;
+}
+
+.control-slider::-moz-range-thumb:hover {
+  transform: scale(1.15);
+}
+
+.control-range-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--c-score-text);
+  margin-top: -2px;
+}
+
+.control-hint {
+  margin-top: 14px;
+  font-size: 11px;
+  color: var(--c-score-text);
+  line-height: 1.5;
+  text-align: center;
+  font-style: italic;
+}
+
+/* =========================================================================
+   Dashboard Footer
+   ========================================================================= */
+.dashboard-footer {
+  padding: 12px 24px;
+  border-top: 1px solid var(--c-border);
+  text-align: center;
+}
+
+.dashboard-footer__version {
+  font-size: 10px;
+  color: var(--c-score-text);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}

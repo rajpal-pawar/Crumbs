@@ -128,3 +128,46 @@ pub fn open_file(path: String) -> Result<(), String> {
 
     result.map(|_| ()).map_err(|e| e.to_string())
 }
+
+// ---------------------------------------------------------------------------
+// update_engine_config
+// ---------------------------------------------------------------------------
+
+/// Update runtime engine tuning parameters (batch size, CPU threads).
+///
+/// These are forwarded to the daemon via IPC.  The daemon applies
+/// the new values to its AtomicConfig, which the indexing loop reads
+/// on every batch iteration — no restart required.
+///
+/// **Front-end usage:**
+/// ```typescript
+/// await invoke("update_engine_config", { batchSize: 10, threads: 4 });
+/// ```
+#[tauri::command]
+pub async fn update_engine_config(
+    batch_size: Option<u32>,
+    threads: Option<u32>,
+    handle: State<'_, Arc<DaemonHandle>>,
+) -> Result<Value, String> {
+    let mut params = serde_json::Map::new();
+    if let Some(bs) = batch_size {
+        params.insert("batch_size".into(), json!(bs));
+    }
+    if let Some(t) = threads {
+        params.insert("threads".into(), json!(t));
+    }
+
+    let response = daemon::send_request(
+        &handle,
+        "update_config",
+        Value::Object(params),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if response.ok {
+        Ok(response.result.unwrap_or(Value::Null))
+    } else {
+        Err(response.error.unwrap_or_else(|| "unknown daemon error".to_string()))
+    }
+}

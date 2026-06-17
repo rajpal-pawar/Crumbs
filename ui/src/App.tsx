@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, KeyboardEvent } from 'react';
 import './index.css';
 import { useSearch } from './useSearch';
 import { classifyHit, badgeClass, type SearchHit } from './types';
+import SettingsDashboard from './SettingsDashboard';
 
 // ---------------------------------------------------------------------------
 // SVG icons (inline — no icon library dependency)
@@ -131,9 +132,11 @@ function HitRow({ hit, index, selected }: { hit: SearchHit; index: number; selec
 export default function App() {
   const [query, setQuery]   = useState('');
   const [selectedIndex, setSelectedIndex] = useState(-1);
-  const [daemonStatus, setDaemonStatus]   = useState('System Ready');
+  const [indexedCount, setIndexedCount]   = useState(0);
+  const [totalCount, setTotalCount]       = useState(0);
   const inputRef            = useRef<HTMLInputElement>(null);
   const searchState         = useSearch(query);
+  const [dashboardOpen, setDashboardOpen] = useState(false);
 
   const showResults =
     searchState.status === 'results' ||
@@ -150,16 +153,13 @@ export default function App() {
   useEffect(() => {
     let unlistenProgress: (() => void) | undefined;
     import('@tauri-apps/api/event').then(({ listen }) => {
-      listen<any>('progress', (event) => {
-        const payload = event.payload?.params || event.payload;
+      listen<any>('crumbs://index-progress', (event) => {
+        const payload = event.payload;
         if (!payload) return;
-        const { scanned, indexed, errors } = payload;
-        if (scanned !== undefined && indexed !== undefined) {
-           if (scanned === indexed) {
-               setDaemonStatus(`System Ready • ${indexed} files indexed`);
-           } else {
-               setDaemonStatus(`Indexing: ${indexed} / ${scanned} files` + (errors ? ` (${errors} errors)` : ''));
-           }
+        const { indexed, total } = payload;
+        if (indexed !== undefined && total !== undefined) {
+          setIndexedCount(indexed);
+          setTotalCount(total);
         }
       }).then(un => {
         unlistenProgress = un;
@@ -272,6 +272,19 @@ export default function App() {
         {searchState.status === 'loading' && (
           <span className="spinner" role="status" aria-label="Searching…" />
         )}
+
+        <button
+          id="settings-gear"
+          className="gear-button"
+          onClick={() => setDashboardOpen(true)}
+          aria-label="Open settings dashboard"
+          title="Engine Settings"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
       </div>
 
       {/* ------------------------------------------------------------------ */}
@@ -310,7 +323,18 @@ export default function App() {
 
           {/* Footer */}
           <div className="results-footer">
-            <span className="daemon-status">{daemonStatus}</span>
+            <span className="daemon-status">
+              {indexedCount < totalCount ? (
+                <>
+                  <span className="spinner" aria-hidden="true" style={{ width: '12px', height: '12px', display: 'inline-block', marginRight: '6px', verticalAlign: 'middle' }} />
+                  Indexing: {indexedCount} / {totalCount} files...
+                </>
+              ) : totalCount > 0 ? (
+                `System Ready • ${totalCount} files indexed.`
+              ) : (
+                'System Ready'
+              )}
+            </span>
             <span>
               <kbd className="kbd">↑↓</kbd> navigate &nbsp;
               <kbd className="kbd">↵</kbd> open &nbsp;
@@ -319,6 +343,9 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Settings Dashboard */}
+      <SettingsDashboard open={dashboardOpen} onClose={() => setDashboardOpen(false)} />
     </div>
   );
 }
