@@ -41,7 +41,6 @@
 use std::path::PathBuf;
 
 use std::sync::Arc;
-use std::sync::Mutex as StdMutex;
 
 use image::{DynamicImage, GenericImageView};
 use ndarray::{Array, Array2, Array3, Array4, ArrayViewD, Axis};
@@ -50,8 +49,6 @@ use tokenizers::Tokenizer;
 use tracing::{debug, info, warn};
 
 use crate::config::Config;
-
-static MODEL_SESSION: std::sync::OnceLock<Option<StdMutex<Session>>> = std::sync::OnceLock::new();
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -87,76 +84,14 @@ const CLIP_IMAGE_SIZE: u32 = 224;
 // Public API — Text
 // ---------------------------------------------------------------------------
 
-/// Initialize the MiniLM ONNX session.
-pub fn init_minilm_session(config: &Config) -> Result<Session, EmbedError> {
-    let models_dir = config.model_cache_dir();
-    let model_path = models_dir.join(MINILM_FILENAME);
-    check_file_exists(&model_path)?;
-
-    Session::builder()
-        .map_err(|e| EmbedError::Ort(e.to_string()))?
-        .with_intra_threads(1)
-        .map_err(|e| EmbedError::Ort(e.to_string()))?
-        .with_inter_threads(1)
-        .map_err(|e| EmbedError::Ort(e.to_string()))?
-        .commit_from_file(&model_path)
-        .map_err(|e| EmbedError::Ort(e.to_string()))
-}
-
-/// Eagerly initialize the MiniLM ONNX session during daemon startup.
-///
-/// Must be called **once** from `main.rs` inside `spawn_blocking` before
-/// the crawl or IPC loop begins.  This prevents the `OnceLock::get_or_init`
-/// from blocking concurrent tasks later (which caused a deadlock with the
-/// 30-second IPC timeout on slow hardware).
 pub fn eagerly_init_minilm(config: &Config) {
-    MODEL_SESSION.get_or_init(|| {
-        tracing::info!("Initializing MiniLM ONNX session globally...");
-        let result = std::panic::catch_unwind(|| {
-            init_minilm_session(config)
-        });
-
-        match result {
-            Ok(Ok(session)) => {
-                info!("MiniLM ONNX session initialized successfully");
-                Some(StdMutex::new(session))
-            }
-            Ok(Err(e)) => {
-                tracing::warn!("Failed to load MiniLM session, semantic search disabled: {}", e);
-                None
-            }
-            Err(payload) => {
-                let msg = if let Some(s) = payload.downcast_ref::<&str>() {
-                    s.to_string()
-                } else if let Some(s) = payload.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "Unknown panic".to_string()
-                };
-                tracing::error!("PANIC during MiniLM ONNX initialization: {}", msg);
-                None
-            }
-        }
-    });
+    let _ = crate::state::get_model_manager().get_minilm(config);
 }
 
-/// Returns `true` if the MiniLM session has been loaded and is available.
-///
-/// Non-blocking — callers can use this to decide whether to attempt
-/// embedding or fall back to text-only search immediately.
 pub fn is_minilm_ready() -> bool {
-    matches!(MODEL_SESSION.get(), Some(Some(_)))
+    crate::state::get_model_manager().is_minilm_ready()
 }
 
-/// Computes MiniLM text embeddings.
-///
-/// **RAM lifecycle:** Tokenizer is created and dropped. The session is now persistent.
-///
-/// # Errors
-/// - [`EmbedError::ModelNotFound`] if `tokenizer.json`
-///   are absent — caller skips this batch without aborting the index run.
-/// - [`EmbedError::Tokenizer`] for malformed `tokenizer.json`.
-/// - [`EmbedError::Ort`] for any ONNX runtime error.
 pub fn embed_text_batch(
     texts: &[String],
     config: &Config,
@@ -165,53 +100,18 @@ pub fn embed_text_batch(
         return Ok(Vec::new());
     }
 
-    let models_dir     = config.model_cache_dir();
-    let tokenizer_path = models_dir.join(TOKENIZER_FILENAME);
-
-    // Check tokenizer file.
-    check_file_exists(&tokenizer_path)?;
-
-    // -----------------------------------------------------------------------
-    // Load the HuggingFace tokenizer from tokenizer.json.
-    // -----------------------------------------------------------------------
-    let tokenizer = Tokenizer::from_file(&tokenizer_path)
-        .map_err(|e| EmbedError::Tokenizer(e.to_string()))?;
-
-    // -----------------------------------------------------------------------
-    // Get the global ONNX session (must have been eagerly initialized).
-    // If the session is not yet initialized (should not happen with eager init),
-    // return ModelNotFound so the caller degrades gracefully.
-    // -----------------------------------------------------------------------
-    let session_option = match MODEL_SESSION.get() {
-        Some(opt) => opt,
-        None => {
-            warn!("MiniLM session not initialized yet — skipping embedding");
-            return Err(EmbedError::ModelNotFound(config.model_cache_dir().join(MINILM_FILENAME)));
-        }
-    };
-
-    let session_mutex = match session_option {
-        Some(mutex) => mutex,
-        None => return Err(EmbedError::ModelNotFound(config.model_cache_dir().join(MINILM_FILENAME))),
-    };
-
+    let model = crate::state::get_model_manager().get_minilm(config)?;
     let mut results = Vec::with_capacity(texts.len());
 
     for (doc_idx, text) in texts.iter().enumerate() {
         let chunks = chunk_text(text, 300, 50);
         let mut doc_embeddings = Vec::with_capacity(chunks.len());
         
-        let mut session_guard = session_mutex.lock().unwrap();
-        
         for chunk in chunks {
-            // Encode: truncation + padding to MINILM_SEQ_LEN handled by the
-            // tokenizer's built-in padding/truncation configuration.
-            // We set them explicitly below to guarantee the correct shapes.
-            let encoding = tokenizer
+            let encoding = model.tokenizer
                 .encode(chunk.as_str(), true)
                 .map_err(|e| EmbedError::Tokenizer(e.to_string()))?;
 
-            // Build input tensors of shape [1, MINILM_SEQ_LEN].
             let (ids, mask, type_ids) = encode_to_tensors(&encoding, MINILM_SEQ_LEN)?;
 
             let inputs = ort::inputs![
@@ -220,15 +120,12 @@ pub fn embed_text_batch(
                 "token_type_ids" => ort::value::Tensor::from_array(type_ids).map_err(|e| EmbedError::Ort(e.to_string()))?,
             ];
 
-            let outputs = session_guard.run(inputs).map_err(|e| EmbedError::Ort(e.to_string()))?;
+            let outputs = model.session.run(inputs).map_err(|e| EmbedError::Ort(e.to_string()))?;
 
-            // MiniLM output: last_hidden_state [1, seq_len, 384].
-            // Extract as ArrayViewD to preserve multi-dimensional layout.
             let hidden = outputs["last_hidden_state"]
                 .try_extract_array::<f32>()
                 .map_err(|e| EmbedError::Ort(e.to_string()))?;
 
-            // Extract the mask for accurate mean-pooling (only real tokens, not padding).
             let real_mask: Vec<bool> = mask
                 .iter()
                 .map(|&m| m == 1i64)
@@ -241,10 +138,6 @@ pub fn embed_text_batch(
         results.push(doc_embeddings);
         debug!(doc_idx, "text embeddings generated for all chunks");
     }
-
-    // Session + tokenizer dropped here — weights freed from RAM.
-   
-    info!(count = results.len(), "MiniLM session closed (lazy drop)");
 
     Ok(results)
 }
@@ -268,24 +161,7 @@ pub fn embed_image_batch(
         return Ok(Vec::new());
     }
 
-    let model_path = config.model_cache_dir().join(CLIP_FILENAME);
-    check_file_exists(&model_path)?;
-
-    info!(
-        count = images.len(),
-        model = CLIP_FILENAME,
-        "opening CLIP session (lazy)"
-    );
-
-    let mut session = Session::builder()
-        .map_err(|e| EmbedError::Ort(e.to_string()))?
-        .with_intra_threads(config.onnx_intra_threads as usize)
-        .map_err(|e| EmbedError::Ort(e.to_string()))?
-        .with_inter_threads(1)
-        .map_err(|e| EmbedError::Ort(e.to_string()))?
-        .commit_from_file(&model_path)
-        .map_err(|e| EmbedError::Ort(e.to_string()))?;
-
+    let session = crate::state::get_model_manager().get_clip_vision(config)?;
     let mut results = Vec::with_capacity(images.len());
 
     for (doc_idx, img) in images.iter().enumerate() {
@@ -297,23 +173,17 @@ pub fn embed_image_batch(
         let rgb = resized.to_rgb8();
         let pixel_values = image_to_clip_tensor(rgb)?;
 
-        // The provided ONNX model combines both text and image pipelines.
-        // It expects `input_ids` and `attention_mask` even if we only want
-        // the `image_embeds` output. Provide dummy tensors.
-       // The dedicated vision model ONLY requires pixel_values.
         let inputs = ort::inputs![
             "pixel_values" => ort::value::Tensor::from_array(pixel_values).map_err(|e| EmbedError::Ort(e.to_string()))?,
         ];
 
         let outputs = session.run(inputs).map_err(|e| EmbedError::Ort(e.to_string()))?;
 
-        // Extract the 512-D vector using the correct node name
         let embeds = outputs["image_embeds"]
             .try_extract_array::<f32>()
             .map_err(|e| EmbedError::Ort(e.to_string()))?;
-           
 
-        let mut vec: Vec<f32> = embeds.iter().copied().collect(); // Make it mut
+        let mut vec: Vec<f32> = embeds.iter().copied().collect();
         if vec.len() != 512 {
             return Err(EmbedError::Shape(format!(
                 "expected CLIP output dim 512, got {}",
@@ -321,61 +191,35 @@ pub fn embed_image_batch(
             )));
         }
 
-        l2_normalize(&mut vec); // <--- ADD THIS LINE TO SHRINK THE MATH
+        l2_normalize(&mut vec);
 
         results.push(vec);
         debug!(doc_idx, "image embedding generated");
     }
-
-    drop(session);
-    info!(count = results.len(), "CLIP session closed (lazy drop)");
 
     Ok(results)
 }
 
 /// Generate 512-dim text embeddings using CLIP text encoder for querying images.
 pub fn embed_clip_text(query: &str, config: &Config) -> Result<Vec<f32>, EmbedError> {
-    let models_dir = config.model_cache_dir();
-    let tokenizer_path = models_dir.join(CLIP_TOKENIZER_FILENAME);
-    let model_path = models_dir.join(CLIP_TEXT_FILENAME);
+    let model = crate::state::get_model_manager().get_clip_text(config)?;
 
-    check_file_exists(&tokenizer_path)?;
-    check_file_exists(&model_path)?;
-
-    info!(model = CLIP_TEXT_FILENAME, "opening CLIP text session (lazy)");
-
-    let tokenizer = Tokenizer::from_file(&tokenizer_path)
-        .map_err(|e| EmbedError::Tokenizer(e.to_string()))?;
-
-    let mut session = Session::builder()
-        .map_err(|e| EmbedError::Ort(e.to_string()))?
-        .with_intra_threads(config.onnx_intra_threads as usize)
-        .map_err(|e| EmbedError::Ort(e.to_string()))?
-        .with_inter_threads(1)
-        .map_err(|e| EmbedError::Ort(e.to_string()))?
-        .commit_from_file(&model_path)
-        .map_err(|e| EmbedError::Ort(e.to_string()))?;
-
-    let encoding = tokenizer
+    let encoding = model.tokenizer
         .encode(query, true)
         .map_err(|e| EmbedError::Tokenizer(e.to_string()))?;
 
-    // CLIP strict 77 tokens limit
-    // CLIP strict 77 tokens limit
-    let (ids, _mask, _type_ids) = encode_to_tensors(&encoding, 77)?; // Added _mask to fix the warning
+    let (ids, _mask, _type_ids) = encode_to_tensors(&encoding, 77)?;
 
     let inputs = ort::inputs![
         "input_ids" => ort::value::Tensor::from_array(ids).map_err(|e| EmbedError::Ort(e.to_string()))?,
     ];
 
-    let outputs = session.run(inputs).map_err(|e| EmbedError::Ort(e.to_string()))?;
+    let outputs = model.session.run(inputs).map_err(|e| EmbedError::Ort(e.to_string()))?;
 
-    // Extract the 512-D vector
     let embeds = outputs["text_embeds"]
         .try_extract_array::<f32>()
         .map_err(|e| EmbedError::Ort(e.to_string()))?;
 
-    // MAKE THIS MUTABLE
     let mut vec: Vec<f32> = embeds.iter().copied().collect();
     if vec.len() != 512 {
         return Err(EmbedError::Shape(format!(
@@ -384,10 +228,7 @@ pub fn embed_clip_text(query: &str, config: &Config) -> Result<Vec<f32>, EmbedEr
         )));
     }
 
-    // SHRINK THE VECTOR TO 1.0
     l2_normalize(&mut vec);
-
-    info!("CLIP text session closed (lazy drop)");
 
     Ok(vec)
 }

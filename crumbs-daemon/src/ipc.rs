@@ -193,6 +193,12 @@ async fn dispatch(req: Request, config: Arc<Config>, db: Arc<Database>, writer: 
         "update_config" => {
             handlers::handle_update_config(req, &atomic_config)
         }
+        "update_folders" => {
+            handlers::handle_update_folders(req, &config, &db, &atomic_config, writer.clone()).await
+        }
+        "get_config" => {
+            handlers::handle_get_config(req, &config, &atomic_config)
+        }
         unknown => {
             warn!(method = %unknown, "unknown IPC method");
             Response::failure(&id, format!("unknown method: {unknown}"))

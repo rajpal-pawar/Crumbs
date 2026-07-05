@@ -22,6 +22,7 @@ mod handlers;
 mod index;
 mod ipc;
 mod throttle;
+mod state;
 
 use std::sync::Arc;
 
@@ -106,7 +107,7 @@ async fn main() {
         let init_config = config.clone();
         info!("Loading MiniLM ONNX model (this may take a few seconds)...");
         let _ = tokio::task::spawn_blocking(move || {
-            embed::eagerly_init_minilm(&init_config);
+            let _ = state::get_model_manager().get_minilm(&init_config);
         }).await;
         info!("MiniLM initialization complete (model ready = {})", embed::is_minilm_ready());
     }
@@ -137,8 +138,19 @@ async fn main() {
         }
     });
 
-    // Spawn the directory crawler *after* the IPC loop is already running.
+    // Spawn the directory crawler *after* the IPC loop is already running,
+    // but ONLY if the user has completed onboarding and selected folders.
     tokio::spawn(async move {
+        if !crawl_config.should_crawl() {
+            info!(
+                "Skipping initial crawl: is_onboarded={}, watch_dirs={}",
+                crawl_config.is_onboarded,
+                crawl_config.watch_dirs.len()
+            );
+            info!("Daemon is waiting for user to select folders via the onboarding flow.");
+            return;
+        }
+
         info!("Performing initial scan of watch_dirs in background...");
         let _ = tokio::task::spawn_blocking({
             let crawl_config = Arc::clone(&crawl_config);
@@ -174,8 +186,6 @@ async fn main() {
 
         for dir in &crawl_config.watch_dirs {
             if dir.exists() {
-                // Warning: watching the entire home directory recursively can hit OS limits (e.g. inotify on Linux).
-                // However, user requested removing the Crumbs/data restriction.
                 if let Err(e) = watcher.watch(dir, RecursiveMode::NonRecursive) {
                     warn!(path = %dir.display(), error = %e, "failed to watch directory");
                 } else {

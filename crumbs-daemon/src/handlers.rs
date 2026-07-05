@@ -119,64 +119,62 @@ pub async fn handle_search(
 
     // spawn_blocking: ONNX inference + SQLite queries are both synchronous.
     let result = tokio::task::spawn_blocking(move || -> Result<Vec<SearchHit>, String> {
-        // ------------------------------------------------------------------
-        // 1. Lazily embed the query text.
-        //    If the model is absent, degrade to BM25-only (embedding = None).
-        // ------------------------------------------------------------------
-        let query_embedding: Option<Vec<f32>> =
-            match embed::embed_text_batch(&[query_text.clone()], &config) {
-                Ok(mut vecs) if !vecs.is_empty() => {
-                    let mut chunks = vecs.remove(0);
-                    if !chunks.is_empty() {
-                        Some(chunks.remove(0))
-                    } else {
+        crate::state::get_model_manager().increment_search();
+        let search_res = (|| {
+            // 1. Lazily embed the query text.
+            let query_embedding: Option<Vec<f32>> =
+                match embed::embed_text_batch(&[query_text.clone()], &config) {
+                    Ok(mut vecs) if !vecs.is_empty() => {
+                        let mut chunks = vecs.remove(0);
+                        if !chunks.is_empty() {
+                            Some(chunks.remove(0))
+                        } else {
+                            None
+                        }
+                    },
+                    Ok(_) => {
+                        warn!("embed_text_batch returned empty results for query");
                         None
                     }
-                },
-                Ok(_) => {
-                    warn!("embed_text_batch returned empty results for query");
-                    None
-                }
-                Err(embed::EmbedError::ModelNotFound(_)) => {
-                    debug!("MiniLM model absent — falling back to BM25-only search");
-                    None
-                }
-                Err(e) => {
-                    warn!(error = %e, "text embedding failed — falling back to BM25-only");
-                    None
-                }
-            };
-        // MiniLM session is dropped inside embed_text_batch. ✓
+                    Err(embed::EmbedError::ModelNotFound(_)) => {
+                        debug!("MiniLM model absent — falling back to BM25-only search");
+                        None
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "text embedding failed — falling back to BM25-only");
+                        None
+                    }
+                };
 
-        let clip_embedding: Option<Vec<f32>> =
-            match embed::embed_clip_text(&query_text, &config) {
-                Ok(vec) => Some(vec),
-                Err(embed::EmbedError::ModelNotFound(_)) => {
-                    debug!("CLIP text model absent — skipping image search");
-                    None
-                }
-                Err(e) => {
-                    warn!(error = %e, "CLIP text embedding failed — skipping image search");
-                    None
-                }
-            };
-        // CLIP session is dropped inside embed_clip_text. ✓
+            let clip_embedding: Option<Vec<f32>> =
+                match embed::embed_clip_text(&query_text, &config) {
+                    Ok(vec) => Some(vec),
+                    Err(embed::EmbedError::ModelNotFound(_)) => {
+                        debug!("CLIP text model absent — skipping image search");
+                        None
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "CLIP text embedding failed — skipping image search");
+                        None
+                    }
+                };
 
-        // ------------------------------------------------------------------
-        // 2. Run hybrid search.
-        // ------------------------------------------------------------------
-        let sq = SearchQuery::new(
-            &query_text,
-            query_embedding.as_deref(),
-            clip_embedding.as_deref(),
-            limit,
-        );
+            // 2. Run hybrid search.
+            let sq = SearchQuery::new(
+                &query_text,
+                query_embedding.as_deref(),
+                clip_embedding.as_deref(),
+                limit,
+            );
 
-        db.with_conn(|conn| {
-            crate::index::search::search(conn, &sq)
-                .map_err(|e| crate::index::DbError::Schema(e.to_string()))
-        })
-        .map_err(|e| e.to_string())
+            db.with_read_conn(|conn| {
+                crate::index::search::search(conn, &sq)
+                    .map_err(|e| crate::index::DbError::Schema(e.to_string()))
+            })
+            .map_err(|e| e.to_string())
+        })();
+        crate::state::get_model_manager().decrement_search();
+        search_res
     })
     .await;
 
@@ -211,7 +209,7 @@ pub async fn handle_status(
     let db     = Arc::clone(db);
 
     let result = tokio::task::spawn_blocking(move || {
-        db.with_conn(|conn| {
+        db.with_read_conn(|conn| {
             let count: i64 = conn
                 .query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))
                 .map_err(crate::index::DbError::Rusqlite)?;
@@ -296,6 +294,17 @@ pub fn run_reindex_pipeline_internal(
     db: &Arc<Database>,
     writer: Option<SharedWriter>,
 ) -> Result<ReindexStats, String> {
+    crate::state::get_model_manager().set_indexer_active(true, config);
+    let res = run_reindex_pipeline_internal_impl(config, db, writer);
+    crate::state::get_model_manager().set_indexer_active(false, config);
+    res
+}
+
+fn run_reindex_pipeline_internal_impl(
+    config: &Arc<Config>,
+    db: &Arc<Database>,
+    writer: Option<SharedWriter>,
+) -> Result<ReindexStats, String> {
     let (path_tx, path_rx) = std::sync::mpsc::sync_channel::<PathBuf>(1000);
     
     let scanned = Arc::new(AtomicU64::new(0));
@@ -316,13 +325,26 @@ pub fn run_reindex_pipeline_internal(
             let walker = walkdir::WalkDir::new(dir)
                 .into_iter()
                 .filter_entry(|e| {
-                    let name = e.file_name().to_string_lossy().to_lowercase();
+                    let name = e.file_name().to_string_lossy();
+                    // Ultra-strict: skip ALL hidden files and directories
+                    // (anything starting with a dot: .git, .config, .local,
+                    // .thumbnails, hidden lockfiles, etc.)
+                    if name.starts_with('.') {
+                        return false;
+                    }
                     if e.file_type().is_dir() {
+                        let lower = name.to_lowercase();
                         !matches!(
-                            name.as_str(),
-                            "node_modules" | "target" | ".git" | ".cache" | "appdata" | "temp" | "windows" | "system32" | "usr" | "bin" | "lib" | "snap" | "flatpak" | "pictures" | "videos" | "music" | "venv" | ".venv" | "env" | ".env" | "__pycache__" | "build" | "dist" | ".vscode" | ".idea"
+                            lower.as_str(),
+                            "node_modules" | "target" | "appdata" | "temp"
+                            | "windows" | "system32" | "usr" | "bin" | "lib"
+                            | "snap" | "flatpak" | "venv" | "env"
+                            | "__pycache__" | "build" | "dist"
                         )
                     } else {
+                        // Also skip hidden regular files (covered by the
+                        // starts_with('.') check above, but explicit here
+                        // for clarity).
                         true
                     }
                 });
@@ -396,6 +418,10 @@ pub fn run_reindex_pipeline_internal(
         };
 
         while let Ok(path) = path_rx.recv() {
+            if crate::state::get_model_manager().has_pending_searches() {
+                debug!("Search request pending. Indexer yielding/pausing to prioritize UI response time.");
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
             let meta = match std::fs::metadata(&path) {
                 Ok(m) => m,
                 Err(_) => { stats.skipped += 1; continue; }
@@ -450,6 +476,10 @@ pub fn run_reindex_pipeline_internal(
 
             if flushed {
                 report_progress(&stats, &writer, &consumer_scanned, &rt_handle, &consumer_registry);
+                if crate::state::get_model_manager().has_pending_searches() {
+                    info!("Search query detected. Indexer pausing between batches...");
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
             }
         }
 
@@ -487,6 +517,170 @@ pub fn run_reindex_pipeline_internal(
     println!("{}", serde_json::json!({"status": "completed", "indexed": stats.indexed, "total": stats.scanned, "directories": final_dirs}));
 
     Ok(stats)
+}
+
+// ---------------------------------------------------------------------------
+// update_folders — add/remove watched directories with DB cleanup
+// ---------------------------------------------------------------------------
+
+/// Handle an `update_folders` request.
+///
+/// Params: `{ "folders": ["<abs path>", ...], "is_onboarded": true }`.
+///
+/// Saves the new folder list to config, persists to disk, and optionally
+/// removes embeddings for paths no longer in the monitored list.
+pub async fn handle_update_folders(
+    req: Request,
+    config: &Arc<Config>,
+    db: &Arc<Database>,
+    atomic_config: &Arc<AtomicConfig>,
+    writer: SharedWriter,
+) -> Response {
+    let folders: Vec<String> = match req.params.get("folders").and_then(|v| v.as_array()) {
+        Some(arr) => arr.iter().filter_map(|v| v.as_str().map(|s| s.to_owned())).collect(),
+        None => return Response::failure(req.id, "missing 'folders' array parameter"),
+    };
+
+    let is_onboarded = req.params.get("is_onboarded")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+
+    let new_dirs: Vec<PathBuf> = folders.iter().map(PathBuf::from).collect();
+
+    info!(folders = ?new_dirs, is_onboarded, "updating monitored folders");
+
+    // Determine removed directories for cleanup.
+    let old_dirs = atomic_config.watch_dirs.read()
+        .map(|d| d.clone())
+        .unwrap_or_default();
+    let removed_dirs: Vec<PathBuf> = old_dirs.iter()
+        .filter(|old| !new_dirs.contains(old))
+        .cloned()
+        .collect();
+
+    // Update the atomic config.
+    if let Ok(mut dirs) = atomic_config.watch_dirs.write() {
+        *dirs = new_dirs.clone();
+    }
+    atomic_config.is_onboarded.store(is_onboarded, Ordering::Relaxed);
+
+    // Persist to disk by creating a new Config snapshot.
+    let mut persisted_config = config.as_ref().clone();
+    persisted_config.watch_dirs = new_dirs.clone();
+    persisted_config.is_onboarded = is_onboarded;
+    if let Err(e) = persisted_config.save_persisted() {
+        warn!("Failed to persist config: {}", e);
+    }
+
+    // Cleanup: remove documents/embeddings for paths under removed directories.
+    if !removed_dirs.is_empty() {
+        let db_clone = Arc::clone(db);
+        let removed = removed_dirs.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Err(e) = cleanup_removed_dirs(&db_clone, &removed) {
+                warn!("Cleanup of removed dirs failed: {}", e);
+            }
+        }).await;
+    }
+
+    // Kick off a reindex if we have folders and are onboarded.
+    if is_onboarded && !new_dirs.is_empty() {
+        let mut reindex_config = config.as_ref().clone();
+        reindex_config.watch_dirs = new_dirs;
+        reindex_config.is_onboarded = true;
+        let reindex_config = Arc::new(reindex_config);
+        let db_clone = Arc::clone(db);
+        let writer_clone = writer;
+
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = run_reindex_pipeline_internal(&reindex_config, &db_clone, Some(writer_clone)) {
+                warn!("Reindex after folder update failed: {}", e);
+            }
+        });
+    }
+
+    Response::success(
+        req.id,
+        json!({
+            "folders": folders,
+            "is_onboarded": is_onboarded,
+        }),
+    )
+}
+
+/// Remove all documents and embeddings whose paths fall under removed directories.
+fn cleanup_removed_dirs(db: &Database, removed_dirs: &[PathBuf]) -> Result<(), String> {
+    db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()
+            .map_err(crate::index::DbError::Rusqlite)?;
+
+        for dir in removed_dirs {
+            let prefix = format!("{}%", dir.display());
+            info!("Cleaning up documents under removed dir: {}", dir.display());
+
+            // Find doc IDs under this path prefix.
+            let mut stmt = tx.prepare(
+                "SELECT id FROM documents WHERE path LIKE ?1"
+            ).map_err(crate::index::DbError::Rusqlite)?;
+
+            let doc_ids: Vec<i64> = stmt.query_map(
+                rusqlite::params![prefix],
+                |row| row.get(0),
+            )
+            .map_err(crate::index::DbError::Rusqlite)?
+            .filter_map(|r| r.ok())
+            .collect();
+
+            for doc_id in &doc_ids {
+                tx.execute(
+                    "DELETE FROM embeddings WHERE doc_id = ?1",
+                    rusqlite::params![doc_id],
+                ).map_err(crate::index::DbError::Rusqlite)?;
+
+                tx.execute(
+                    "DELETE FROM embeddings_images WHERE doc_id = ?1",
+                    rusqlite::params![doc_id],
+                ).map_err(crate::index::DbError::Rusqlite)?;
+            }
+
+            tx.execute(
+                "DELETE FROM documents WHERE path LIKE ?1",
+                rusqlite::params![prefix],
+            ).map_err(crate::index::DbError::Rusqlite)?;
+
+            info!("Cleaned up {} documents under {}", doc_ids.len(), dir.display());
+        }
+
+        tx.commit().map_err(crate::index::DbError::Rusqlite)?;
+        Ok(())
+    }).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// get_config — read onboarding status and watch_dirs
+// ---------------------------------------------------------------------------
+
+/// Handle a `get_config` request.
+///
+/// Returns the current onboarding status and list of watched directories.
+pub fn handle_get_config(
+    req: Request,
+    config: &Arc<Config>,
+    atomic_config: &Arc<AtomicConfig>,
+) -> Response {
+    let is_onboarded = atomic_config.is_onboarded.load(Ordering::Relaxed);
+    let watch_dirs = atomic_config.watch_dirs.read()
+        .map(|d| d.iter().map(|p| p.display().to_string()).collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    Response::success(
+        req.id,
+        json!({
+            "is_onboarded": is_onboarded,
+            "watch_dirs": watch_dirs,
+            "data_dir": config.data_dir.display().to_string(),
+        }),
+    )
 }
 
 // ---------------------------------------------------------------------------

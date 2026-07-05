@@ -718,3 +718,312 @@ html, body, #root {
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
+
+/* =========================================================================
+   Managed Folders — Add/Remove buttons in Settings
+   ========================================================================= */
+.dir-list__remove {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  color: var(--c-text-muted);
+  cursor: pointer;
+  transition: color var(--transition), background var(--transition);
+}
+
+.dir-list__remove:hover {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.1);
+}
+
+.dir-list__remove:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.managed-folder-add-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px 16px;
+  background: rgba(96, 165, 250, 0.06);
+  border: 1px dashed rgba(96, 165, 250, 0.25);
+  border-radius: var(--radius-md);
+  color: #60a5fa;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+}
+
+.managed-folder-add-btn:hover {
+  background: rgba(96, 165, 250, 0.1);
+  border-color: rgba(96, 165, 250, 0.4);
+  color: #93c5fd;
+}
+
+.managed-folder-add-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* =========================================================================
+   Onboarding Flow — First-Run Setup
+   ========================================================================= */
+.onboarding-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10001;
+  background: var(--c-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fade-in 300ms ease forwards;
+}
+
+.onboarding-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.onboarding-panel {
+  position: relative;
+  width: min(480px, 92vw);
+  max-height: 85vh;
+  overflow-y: auto;
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: 20px;
+  box-shadow:
+    0 24px 80px rgba(0, 0, 0, 0.8),
+    0 8px 32px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  animation: panel-in 400ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  overflow: hidden;
+}
+
+/* Decorative gradient glow behind the panel */
+.onboarding-glow {
+  position: absolute;
+  top: -60px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 300px;
+  height: 200px;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(96, 165, 250, 0.12) 0%,
+    rgba(167, 139, 250, 0.08) 40%,
+    transparent 70%
+  );
+  border-radius: 50%;
+  pointer-events: none;
+  filter: blur(40px);
+}
+
+.onboarding-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 36px 32px 24px;
+  text-align: center;
+}
+
+.onboarding-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--c-text);
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+  background: linear-gradient(135deg, #f0f0f0 0%, #60a5fa 50%, #a78bfa 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.onboarding-subtitle {
+  font-size: 13px;
+  color: var(--c-text-muted);
+  line-height: 1.6;
+}
+
+.onboarding-body {
+  padding: 0 24px 16px;
+}
+
+.onboarding-folder-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+
+.onboarding-folder-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--c-hit-bg);
+  border-radius: var(--radius-md);
+  transition: background var(--transition);
+  animation: slide-in 150ms ease forwards;
+}
+
+.onboarding-folder-item:hover {
+  background: var(--c-hit-hover);
+}
+
+.onboarding-folder-icon {
+  flex-shrink: 0;
+  color: #60a5fa;
+}
+
+.onboarding-folder-path {
+  flex: 1;
+  font-size: 12.5px;
+  color: var(--c-text);
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.onboarding-folder-remove {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  color: var(--c-text-muted);
+  cursor: pointer;
+  transition: color var(--transition), background var(--transition);
+}
+
+.onboarding-folder-remove:hover {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.1);
+}
+
+.onboarding-add-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  padding: 14px 20px;
+  background: rgba(96, 165, 250, 0.06);
+  border: 1px dashed rgba(96, 165, 250, 0.3);
+  border-radius: var(--radius-md);
+  color: #60a5fa;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition), transform 0.15s ease;
+}
+
+.onboarding-add-btn:hover {
+  background: rgba(96, 165, 250, 0.1);
+  border-color: rgba(96, 165, 250, 0.5);
+  transform: translateY(-1px);
+}
+
+.onboarding-add-btn:active {
+  transform: translateY(0);
+}
+
+.onboarding-add-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.onboarding-error {
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.2);
+  border-radius: var(--radius-sm);
+  color: #f87171;
+  font-size: 12px;
+  text-align: center;
+  animation: slide-in 100ms ease forwards;
+}
+
+.onboarding-footer {
+  padding: 16px 24px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.onboarding-start-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 14px 24px;
+  background: linear-gradient(135deg, #60a5fa 0%, #a78bfa 100%);
+  border: none;
+  border-radius: var(--radius-md);
+  color: #000;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  transition: opacity 0.15s ease, transform 0.15s ease, box-shadow 0.2s ease;
+  box-shadow: 0 4px 20px rgba(96, 165, 250, 0.3);
+}
+
+.onboarding-start-btn:hover:not(:disabled) {
+  opacity: 0.92;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 28px rgba(96, 165, 250, 0.45);
+}
+
+.onboarding-start-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.onboarding-start-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.onboarding-hint {
+  font-size: 11px;
+  color: var(--c-score-text);
+  text-align: center;
+  font-style: italic;
+}
+
+/* Scrollbar for onboarding panel */
+.onboarding-panel::-webkit-scrollbar {
+  width: 5px;
+}
+.onboarding-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+.onboarding-panel::-webkit-scrollbar-thumb {
+  background: var(--c-border-focus);
+  border-radius: 4px;
+}

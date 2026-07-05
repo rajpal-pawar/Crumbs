@@ -39,6 +39,10 @@ pub fn run() {
         // -------------------------------------------------------------------
         .plugin(tauri_plugin_shell::init())
         // -------------------------------------------------------------------
+        // Dialog plugin — required for native folder picker dialogs.
+        // -------------------------------------------------------------------
+        .plugin(tauri_plugin_dialog::init())
+        // -------------------------------------------------------------------
         // Global shortcut plugin — for the quick-open hotkey (Phase 2 UI).
         // -------------------------------------------------------------------
         .plugin({
@@ -86,6 +90,9 @@ pub fn run() {
             commands::reindex,
             commands::open_file,
             commands::update_engine_config,
+            commands::get_onboarding_status,
+            commands::update_monitored_folders,
+            commands::select_folders_dialog,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");

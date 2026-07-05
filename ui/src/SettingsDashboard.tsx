@@ -97,7 +97,19 @@ export default function SettingsDashboard({ open, onClose }: SettingsDashboardPr
   const [total, setTotal] = useState(0);
   const [status, setStatus] = useState<string>('idle');
   const [config, setConfig] = useState<EngineConfig>({ batchSize: 5, threads: 2 });
+  const [managedFolders, setManagedFolders] = useState<string[]>([]);
+  const [folderUpdating, setFolderUpdating] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
+
+  // ── Load managed folders when panel opens ──
+  useEffect(() => {
+    if (!open) return;
+    invoke<{ is_onboarded: boolean; watch_dirs: string[] }>('get_onboarding_status')
+      .then((status) => {
+        setManagedFolders(status.watch_dirs || []);
+      })
+      .catch((err) => console.error('[Crumbs] failed to load folders:', err));
+  }, [open]);
 
   // ── Listen for progress events ──
   useEffect(() => {
@@ -175,6 +187,41 @@ export default function SettingsDashboard({ open, onClose }: SettingsDashboardPr
     sendConfig(next);
   };
 
+  // ── Managed Folders: Add ──
+  const handleAddFolder = async () => {
+    try {
+      const paths: string[] = await invoke('select_folders_dialog');
+      if (paths && paths.length > 0) {
+        const combined = [...managedFolders];
+        for (const p of paths) {
+          if (!combined.includes(p)) {
+            combined.push(p);
+          }
+        }
+        setFolderUpdating(true);
+        await invoke('update_monitored_folders', { folders: combined, isOnboarded: true });
+        setManagedFolders(combined);
+        setFolderUpdating(false);
+      }
+    } catch (err) {
+      console.error('[Crumbs] add folder failed:', err);
+      setFolderUpdating(false);
+    }
+  };
+
+  // ── Managed Folders: Remove ──
+  const handleRemoveFolder = async (path: string) => {
+    const updated = managedFolders.filter(p => p !== path);
+    setFolderUpdating(true);
+    try {
+      await invoke('update_monitored_folders', { folders: updated, isOnboarded: true });
+      setManagedFolders(updated);
+    } catch (err) {
+      console.error('[Crumbs] remove folder failed:', err);
+    }
+    setFolderUpdating(false);
+  };
+
   if (!open) return null;
 
   const isActive = status === 'indexing' || status === 'scanning';
@@ -214,20 +261,83 @@ export default function SettingsDashboard({ open, onClose }: SettingsDashboardPr
           </div>
         </div>
 
-        {/* Directory Matrix */}
+        {/* Managed Folders — CRUD for watch_dirs */}
         <section className="dashboard-section">
           <h3 className="dashboard-section__title">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
             </svg>
-            Watched Directories
+            Managed Folders
           </h3>
 
-          {dirs.length === 0 ? (
+          {managedFolders.length === 0 ? (
             <div className="dashboard-empty">
-              <span className="dashboard-empty__text">No directory data yet — indexing will populate this.</span>
+              <span className="dashboard-empty__text">No folders configured. Add folders to start indexing.</span>
             </div>
           ) : (
+            <ul className="dir-list">
+              {managedFolders.map((path) => (
+                <li key={path} className="dir-list__item">
+                  <span className="dir-list__path" title={path}>
+                    {truncatePath(path)}
+                  </span>
+                  <button
+                    className="dir-list__remove"
+                    onClick={() => handleRemoveFolder(path)}
+                    disabled={folderUpdating}
+                    aria-label={`Remove ${path}`}
+                    title="Remove folder"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="3 6 5 6 21 6" />
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                    </svg>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <button
+            className="managed-folder-add-btn"
+            onClick={handleAddFolder}
+            disabled={folderUpdating}
+          >
+            {folderUpdating ? (
+              <>
+                <span className="spinner" style={{ width: '12px', height: '12px' }} />
+                Updating…
+              </>
+            ) : (
+              <>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                  <line x1="12" y1="11" x2="12" y2="17" />
+                  <line x1="9" y1="14" x2="15" y2="14" />
+                </svg>
+                Add Folder
+              </>
+            )}
+          </button>
+        </section>
+
+        {/* Indexing Status Matrix */}
+        {dirs.length > 0 && (
+          <section className="dashboard-section">
+            <h3 className="dashboard-section__title">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="4" y1="21" x2="4" y2="14" />
+                <line x1="4" y1="10" x2="4" y2="3" />
+                <line x1="12" y1="21" x2="12" y2="12" />
+                <line x1="12" y1="8" x2="12" y2="3" />
+                <line x1="20" y1="21" x2="20" y2="16" />
+                <line x1="20" y1="12" x2="20" y2="3" />
+                <line x1="1" y1="14" x2="7" y2="14" />
+                <line x1="9" y1="8" x2="15" y2="8" />
+                <line x1="17" y1="16" x2="23" y2="16" />
+              </svg>
+              Indexing Status
+            </h3>
             <ul className="dir-list">
               {dirs.map((d, i) => (
                 <li key={i} className="dir-list__item">
@@ -238,8 +348,8 @@ export default function SettingsDashboard({ open, onClose }: SettingsDashboardPr
                 </li>
               ))}
             </ul>
-          )}
-        </section>
+          </section>
+        )}
 
         {/* Engine Controls */}
         <section className="dashboard-section">

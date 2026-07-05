@@ -22,7 +22,7 @@
 //! | macOS    | `~/Library/Application Support/crumbs` |
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, AtomicI16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, AtomicI16, Ordering};
 use std::sync::{Arc, RwLock};
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -35,7 +35,7 @@ use tracing::info;
 pub const MAX_FILE_BYTES: u64 = 15 * 1024 * 1024; // 15 MiB
 
 /// Runtime configuration for the daemon.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Root directory for all Crumbs data (database, model cache, index).
     pub data_dir: PathBuf,
@@ -65,6 +65,11 @@ pub struct Config {
     /// Maximum number of concurrent indexing tasks.
     /// Kept low on the target hardware to leave room for the Tauri UI.
     pub index_parallelism: usize,
+
+    /// Whether the user has completed the first-run onboarding flow.
+    /// When `false`, the daemon skips automatic crawling and waits for
+    /// explicit IPC commands to set up folders.
+    pub is_onboarded: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -79,6 +84,9 @@ pub struct AtomicConfig {
     pub embed_batch_size: AtomicUsize,
     pub onnx_intra_threads: AtomicI16,
     pub index_parallelism: AtomicUsize,
+    pub is_onboarded: AtomicBool,
+    /// Mutable watch_dirs — updated when user adds/removes folders.
+    pub watch_dirs: RwLock<Vec<PathBuf>>,
     /// The base (immutable) config for paths, limits, etc.
     pub base: Config,
 }
@@ -89,6 +97,8 @@ impl AtomicConfig {
             embed_batch_size: AtomicUsize::new(config.embed_batch_size),
             onnx_intra_threads: AtomicI16::new(config.onnx_intra_threads),
             index_parallelism: AtomicUsize::new(config.index_parallelism),
+            is_onboarded: AtomicBool::new(config.is_onboarded),
+            watch_dirs: RwLock::new(config.watch_dirs.clone()),
             base: config,
         }
     }
@@ -203,11 +213,20 @@ impl DirStatusRegistry {
     }
 }
 
+/// Persisted user preferences (watch_dirs + onboarding flag).
+/// Stored as JSON in `<data_dir>/config.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedConfig {
+    watch_dirs: Vec<PathBuf>,
+    is_onboarded: bool,
+}
+
 impl Config {
     /// Load configuration.
     ///
-    /// Currently reads from a hard-coded set of defaults.  In a later phase
-    /// this will merge in values from a TOML file inside `data_dir`.
+    /// Reads persistent user preferences (watch_dirs, is_onboarded) from
+    /// `<data_dir>/config.json`, falling back to safe defaults if the file
+    /// doesn't exist yet.
     pub fn load() -> Result<Self, ConfigError> {
         let data_dir = resolve_data_dir()?;
 
@@ -220,8 +239,33 @@ impl Config {
             }
         })?;
 
-        let watch_dirs = default_watch_dirs();
-        info!("Resolved Home Directory for indexing: {:?}", watch_dirs);
+        // Load persisted user preferences or create defaults.
+        let config_path = data_dir.join("config.json");
+        let persisted = if config_path.exists() {
+            match std::fs::read_to_string(&config_path) {
+                Ok(contents) => {
+                    match serde_json::from_str::<PersistedConfig>(&contents) {
+                        Ok(p) => {
+                            info!("Loaded persisted config: {:?}", p);
+                            p
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to parse config.json, using defaults: {}", e);
+                            PersistedConfig { watch_dirs: vec![], is_onboarded: false }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to read config.json, using defaults: {}", e);
+                    PersistedConfig { watch_dirs: vec![], is_onboarded: false }
+                }
+            }
+        } else {
+            info!("No config.json found — first run, watch_dirs empty, is_onboarded=false");
+            PersistedConfig { watch_dirs: vec![], is_onboarded: false }
+        };
+
+        info!("Watch dirs: {:?}, onboarded: {}", persisted.watch_dirs, persisted.is_onboarded);
 
         Ok(Config {
             data_dir,
@@ -235,8 +279,9 @@ impl Config {
             // 32 docs/batch: ~few MB peak RAM per batch, fast enough
             // amortisation of ONNX session startup (~200 ms).
             embed_batch_size: 5,
-            watch_dirs,
+            watch_dirs: persisted.watch_dirs,
             index_parallelism: 1,
+            is_onboarded: persisted.is_onboarded,
         })
     }
 
@@ -248,6 +293,38 @@ impl Config {
     /// Convenience: directory where downloaded ONNX models are cached.
     pub fn model_cache_dir(&self) -> PathBuf {
         self.data_dir.join("models")
+    }
+
+    /// Path to the persisted config JSON file.
+    pub fn config_file_path(&self) -> PathBuf {
+        self.data_dir.join("config.json")
+    }
+
+    /// Persist the current watch_dirs and is_onboarded to disk.
+    pub fn save_persisted(&self) -> Result<(), ConfigError> {
+        let persisted = PersistedConfig {
+            watch_dirs: self.watch_dirs.clone(),
+            is_onboarded: self.is_onboarded,
+        };
+        let json = serde_json::to_string_pretty(&persisted)
+            .map_err(|e| ConfigError::IoError {
+                path: self.config_file_path(),
+                source: std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+            })?;
+        std::fs::write(self.config_file_path(), json).map_err(|e| {
+            ConfigError::IoError {
+                path: self.config_file_path(),
+                source: e,
+            }
+        })?;
+        info!("Persisted config saved to {:?}", self.config_file_path());
+        Ok(())
+    }
+
+    /// Returns true if the daemon should perform automatic crawling.
+    /// Crawling is skipped when not onboarded or when watch_dirs is empty.
+    pub fn should_crawl(&self) -> bool {
+        self.is_onboarded && !self.watch_dirs.is_empty()
     }
 }
 
@@ -267,11 +344,9 @@ fn resolve_data_dir() -> Result<PathBuf, ConfigError> {
 }
 
 fn default_watch_dirs() -> Vec<PathBuf> {
-    let mut watch_dirs = Vec::new();
-    if let Some(home) = dirs::home_dir() {
-        watch_dirs.push(home);
-    }
-    watch_dirs
+    // No automatic home directory indexing — user must explicitly select
+    // folders during the onboarding flow.
+    vec![]
 }
 // ---------------------------------------------------------------------------
 // Error type

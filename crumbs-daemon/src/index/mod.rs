@@ -24,7 +24,8 @@ pub mod search;
 pub mod writer;
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rusqlite::Connection;
 use tracing::info;
@@ -62,13 +63,14 @@ pub fn register_vec_extension() {
 // Database wrapper
 // ---------------------------------------------------------------------------
 
-/// Thread-safe wrapper around a `rusqlite::Connection`.
+/// Thread-safe wrapper around a connection pool of `rusqlite::Connection`s.
 ///
-/// The inner `Mutex` serialises all SQLite calls.  SQLite in WAL mode can
-/// handle concurrent reads from multiple OS threads, but `rusqlite` exposes a
-/// single-connection interface; the mutex enforces that access pattern.
+/// WAL mode allows one writer and multiple concurrent readers.
+/// We hold one write connection and a pool of read connections.
 pub struct Database {
-    conn: Mutex<Connection>,
+    write_conn: Mutex<Connection>,
+    read_pool: Vec<Arc<Mutex<Connection>>>,
+    read_idx: AtomicUsize,
 }
 
 impl Database {
@@ -84,6 +86,7 @@ impl Database {
             std::fs::create_dir_all(parent).map_err(DbError::Io)?;
         }
 
+        // Open write connection
         let conn = Connection::open(path).map_err(DbError::Rusqlite)?;
 
         // WAL mode — allows reads to proceed concurrently with a single
@@ -98,22 +101,45 @@ impl Database {
         // Apply the schema (idempotent — uses CREATE IF NOT EXISTS).
         apply_schema(&conn)?;
 
-        info!(path = %path.display(), "database opened and schema applied");
+        // Open a pool of read connections (e.g. 4)
+        let mut read_pool = Vec::new();
+        for _ in 0..4 {
+            let r_conn = Connection::open(path).map_err(DbError::Rusqlite)?;
+            r_conn.execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 PRAGMA synchronous=NORMAL;
+                 PRAGMA foreign_keys=ON;"
+            ).map_err(DbError::Rusqlite)?;
+            read_pool.push(Arc::new(Mutex::new(r_conn)));
+        }
+
+        info!(path = %path.display(), "database opened (with read connection pool) and schema applied");
 
         Ok(Database {
-            conn: Mutex::new(conn),
+            write_conn: Mutex::new(conn),
+            read_pool,
+            read_idx: AtomicUsize::new(0),
         })
     }
 
-    /// Acquire a lock on the inner connection and call `f` with a reference.
-    ///
-    /// Use this as the single entry point for all SQLite operations so that
-    /// lock acquisition errors are handled uniformly.
+    /// Acquire a lock on the dedicated write connection and call `f` with a reference.
     pub fn with_conn<F, T>(&self, f: F) -> Result<T, DbError>
     where
         F: FnOnce(&Connection) -> Result<T, DbError>,
     {
-        let conn = self.conn.lock().map_err(|_| DbError::PoisonedLock)?;
+        let conn = self.write_conn.lock().map_err(|_| DbError::PoisonedLock)?;
+        f(&conn)
+    }
+
+    /// Acquire a lock on a separate read connection from the pool and call `f` with a reference.
+    /// This allows concurrent read-only queries (like searches) without blocking the indexer writer.
+    pub fn with_read_conn<F, T>(&self, f: F) -> Result<T, DbError>
+    where
+        F: FnOnce(&Connection) -> Result<T, DbError>,
+    {
+        let idx = self.read_idx.fetch_add(1, Ordering::Relaxed) % self.read_pool.len();
+        let conn_arc = &self.read_pool[idx];
+        let conn = conn_arc.lock().map_err(|_| DbError::PoisonedLock)?;
         f(&conn)
     }
 }

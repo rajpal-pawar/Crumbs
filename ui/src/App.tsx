@@ -3,6 +3,8 @@ import './index.css';
 import { useSearch } from './useSearch';
 import { classifyHit, badgeClass, type SearchHit } from './types';
 import SettingsDashboard from './SettingsDashboard';
+import Onboarding from './Onboarding';
+import { invoke } from '@tauri-apps/api/core';
 
 // ---------------------------------------------------------------------------
 // SVG icons (inline — no icon library dependency)
@@ -137,6 +139,35 @@ export default function App() {
   const inputRef            = useRef<HTMLInputElement>(null);
   const searchState         = useSearch(query);
   const [dashboardOpen, setDashboardOpen] = useState(false);
+  const [isOnboarded, setIsOnboarded] = useState<boolean | null>(null); // null = loading
+  const [onboardingChecked, setOnboardingChecked] = useState(false);
+
+  // Check onboarding status on mount
+  useEffect(() => {
+    let cancelled = false;
+    const checkOnboarding = async () => {
+      try {
+        const status = await invoke<{ is_onboarded: boolean; watch_dirs: string[] }>('get_onboarding_status');
+        if (!cancelled) {
+          setIsOnboarded(status.is_onboarded);
+          setOnboardingChecked(true);
+        }
+      } catch (err) {
+        console.error('[Crumbs] onboarding check failed:', err);
+        // If the daemon isn't ready yet, retry after a brief delay
+        if (!cancelled) {
+          setTimeout(checkOnboarding, 1500);
+        }
+      }
+    };
+    // Small delay to let the daemon sidecar boot
+    setTimeout(checkOnboarding, 800);
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleOnboardingComplete = useCallback(() => {
+    setIsOnboarded(true);
+  }, []);
 
   const showResults =
     searchState.status === 'results' ||
@@ -238,6 +269,24 @@ export default function App() {
     window.addEventListener('keydown', handleGlobal);
     return () => window.removeEventListener('keydown', handleGlobal);
   }, [query, hits, selectedIndex]);
+
+  // ── Onboarding gate ──
+  // Show loading splash while checking onboarding status
+  if (!onboardingChecked || isOnboarded === null) {
+    return (
+      <div className="onboarding-overlay">
+        <div className="onboarding-loading">
+          <span className="spinner" style={{ width: '24px', height: '24px' }} />
+          <span style={{ color: 'var(--c-text-muted)', marginTop: '12px', fontSize: '13px' }}>Connecting to Crumbs engine…</span>
+        </div>
+      </div>
+    );
+  }
+
+  // Show onboarding flow if not yet onboarded
+  if (!isOnboarded) {
+    return <Onboarding onComplete={handleOnboardingComplete} />;
+  }
 
   return (
     <div className="crumbs-shell" role="combobox" aria-haspopup="listbox" aria-expanded={showResults}>
