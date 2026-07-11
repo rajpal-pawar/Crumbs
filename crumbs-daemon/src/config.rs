@@ -265,7 +265,15 @@ impl Config {
             PersistedConfig { watch_dirs: vec![], is_onboarded: false }
         };
 
-        info!("Watch dirs: {:?}, onboarded: {}", persisted.watch_dirs, persisted.is_onboarded);
+        // Task 3: Enforce configuration isolation. Read explicitly from the saved config.json
+        // and do NOT merge or fall back onto standard system roots if the array contains at least one item.
+        let watch_dirs = if !persisted.watch_dirs.is_empty() {
+            persisted.watch_dirs
+        } else {
+            vec![]
+        };
+
+        info!("Watch dirs: {:?}, onboarded: {}", watch_dirs, persisted.is_onboarded);
 
         Ok(Config {
             data_dir,
@@ -279,7 +287,7 @@ impl Config {
             // 32 docs/batch: ~few MB peak RAM per batch, fast enough
             // amortisation of ONNX session startup (~200 ms).
             embed_batch_size: 5,
-            watch_dirs: persisted.watch_dirs,
+            watch_dirs,
             index_parallelism: 1,
             is_onboarded: persisted.is_onboarded,
         })

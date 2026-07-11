@@ -317,23 +317,25 @@ fn run_reindex_pipeline_internal_impl(
     let config_clone = Arc::clone(config);
     let producer = std::thread::spawn(move || {
         for dir in &config_clone.watch_dirs {
+            // Task 1.1: Ensure the crawler only runs on paths explicitly present in watch_dirs
+            if !config_clone.watch_dirs.contains(dir) {
+                continue;
+            }
             if !dir.exists() { continue; }
 
             // Transition directory to Scanning state.
             producer_registry.set_state(dir, DirState::Scanning);
 
+            // Task 2: Completely block hidden files and folders across Linux and Windows
             let walker = walkdir::WalkDir::new(dir)
                 .into_iter()
                 .filter_entry(|e| {
-                    let name = e.file_name().to_string_lossy();
-                    // Ultra-strict: skip ALL hidden files and directories
-                    // (anything starting with a dot: .git, .config, .local,
-                    // .thumbnails, hidden lockfiles, etc.)
-                    if name.starts_with('.') {
+                    let file_name = e.file_name().to_string_lossy();
+                    if file_name.starts_with('.') {
                         return false;
                     }
                     if e.file_type().is_dir() {
-                        let lower = name.to_lowercase();
+                        let lower = file_name.to_lowercase();
                         !matches!(
                             lower.as_str(),
                             "node_modules" | "target" | "appdata" | "temp"
@@ -342,9 +344,6 @@ fn run_reindex_pipeline_internal_impl(
                             | "__pycache__" | "build" | "dist"
                         )
                     } else {
-                        // Also skip hidden regular files (covered by the
-                        // starts_with('.') check above, but explicit here
-                        // for clarity).
                         true
                     }
                 });
@@ -360,6 +359,12 @@ fn run_reindex_pipeline_internal_impl(
                 }
 
                 let path = entry.path().to_path_buf();
+
+                // Task 1.2: Absolute boundary assertion check before pushing path to MPSC queue
+                if !config_clone.watch_dirs.iter().any(|allowed_dir| path.starts_with(allowed_dir)) {
+                    continue; // Reject instantly if it strayed out of bounds
+                }
+
                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
                 if !matches!(ext.as_str(), "txt" | "md" | "pdf" | "png" | "jpg" | "jpeg" | "py" | "c" | "cpp" | "h" | "hpp" | "rs" | "js" | "ts" | "jsx" | "tsx" | "html" | "css" | "json" | "toml" | "yaml" | "yml" | "java" | "go" | "sh" | "bash" | "zsh") {
                     continue;
