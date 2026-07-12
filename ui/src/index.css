@@ -5,7 +5,7 @@
 :root, [data-theme="dark"] {
   --c-bg: #0a0e1a;
   --c-surface: rgba(255,255,255,0.06);
-  --c-surface-solid: #131825;
+  --c-surface-solid: #131825; /* Solid opaque color for main windows */
   --c-border: rgba(255,255,255,0.08);
   --c-border-focus: rgba(255,255,255,0.18);
   --c-text: #eaf0ff;
@@ -29,7 +29,7 @@
 [data-theme="light"] {
   --c-bg: #dfe6f0;
   --c-surface: rgba(255,255,255,0.45);
-  --c-surface-solid: rgba(255,255,255,0.7);
+  --c-surface-solid: #ffffff; /* Fully opaque white for light mode windows */
   --c-border: rgba(255,255,255,0.6);
   --c-border-focus: rgba(255,255,255,0.9);
   --c-text: #1a1f36;
@@ -99,7 +99,7 @@ html, body, #root {
 /* === Search Bar === */
 .search-bar {
   display: flex; align-items: center; gap: 10px;
-  background: var(--c-surface);
+  background: var(--c-surface-solid);
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
   border: 1px solid var(--c-border);
@@ -130,7 +130,7 @@ html, body, #root {
 /* === Results === */
 .results-panel {
   margin-top: 6px;
-  background: var(--c-surface);
+  background: var(--c-surface-solid);
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
   border: 1px solid var(--c-border);
