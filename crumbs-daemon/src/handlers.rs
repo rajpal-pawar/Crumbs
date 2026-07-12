@@ -235,6 +235,14 @@ pub async fn handle_status(
     let db_size = std::fs::metadata(config.db_path()).map(|m| m.len()).unwrap_or(0);
     let onnx_memory = crate::state::get_model_manager().get_onnx_memory_footprint();
 
+    let (failed_files, skipped_files) = crate::state::get_model_manager().get_indexing_issues();
+    let failed_json: Vec<serde_json::Value> = failed_files.iter().take(50).map(|(p, r)| {
+        json!({"path": p, "reason": r})
+    }).collect();
+    let skipped_json: Vec<serde_json::Value> = skipped_files.iter().take(50).map(|(p, r)| {
+        json!({"path": p, "reason": r})
+    }).collect();
+
     Response::success(
         req.id,
         json!({
@@ -258,6 +266,8 @@ pub async fn handle_status(
                                     .iter()
                                     .map(|p| p.display().to_string())
                                     .collect::<Vec<_>>(),
+            "failed_files":     failed_json,
+            "skipped_files":    skipped_json,
         }),
     )
 }
@@ -415,6 +425,15 @@ fn run_reindex_pipeline_internal_impl(
                 json!({"path": d.path, "state": d.state})
             }).collect();
             let processed = stats.indexed + stats.skipped + stats.errors;
+
+            // Build per-file details for the UI (last 50 of each to avoid huge payloads)
+            let failed_json: Vec<serde_json::Value> = stats.failed_files.iter().rev().take(50).map(|(p, r)| {
+                json!({"path": p, "reason": r})
+            }).collect();
+            let skipped_json: Vec<serde_json::Value> = stats.skipped_files.iter().rev().take(50).map(|(p, r)| {
+                json!({"path": p, "reason": r})
+            }).collect();
+
             println!(
                 "{}",
                 serde_json::json!({
@@ -424,7 +443,9 @@ fn run_reindex_pipeline_internal_impl(
                     "errors": stats.errors,
                     "skipped": stats.skipped,
                     "total": s,
-                    "directories": dirs_json
+                    "directories": dirs_json,
+                    "failed_files": failed_json,
+                    "skipped_files": skipped_json
                 })
             );
 
@@ -457,6 +478,7 @@ fn run_reindex_pipeline_internal_impl(
                 Err(e) => {
                     tracing::warn!(path = %path.display(), error = %e, "Failed to read metadata — skipping");
                     stats.skipped += 1;
+                    stats.skipped_files.push((path.display().to_string(), format!("metadata error: {}", e)));
                     continue;
                 }
             };
@@ -469,6 +491,7 @@ fn run_reindex_pipeline_internal_impl(
             if is_semantic && meta.len() > config_clone.max_file_bytes {
                 tracing::warn!(path = %path.display(), size = meta.len(), limit = config_clone.max_file_bytes, "File size exceeds limit — skipping");
                 stats.skipped += 1;
+                stats.skipped_files.push((path.display().to_string(), format!("file too large: {} bytes (limit {})", meta.len(), config_clone.max_file_bytes)));
                 continue;
             }
 
@@ -477,11 +500,13 @@ fn run_reindex_pipeline_internal_impl(
                 Ok(None) => {
                     tracing::info!(path = %path.display(), "File skipped by extractor");
                     stats.skipped += 1;
+                    stats.skipped_files.push((path.display().to_string(), "unsupported format or binary content".to_string()));
                     continue;
                 }
                 Err(e) => {
                     tracing::error!(path = %path.display(), error = ?e, "Extraction failed — skipping");
                     stats.errors += 1;
+                    stats.failed_files.push((path.display().to_string(), format!("{}", e)));
                     continue;
                 }
             };
@@ -563,6 +588,14 @@ fn run_reindex_pipeline_internal_impl(
         json!({"path": d.path, "state": d.state})
     }).collect();
     let processed = stats.indexed + stats.skipped + stats.errors;
+
+    let failed_json: Vec<serde_json::Value> = stats.failed_files.iter().map(|(p, r)| {
+        json!({"path": p, "reason": r})
+    }).collect();
+    let skipped_json: Vec<serde_json::Value> = stats.skipped_files.iter().map(|(p, r)| {
+        json!({"path": p, "reason": r})
+    }).collect();
+
     println!(
         "{}",
         serde_json::json!({
@@ -572,9 +605,13 @@ fn run_reindex_pipeline_internal_impl(
             "errors": stats.errors,
             "skipped": stats.skipped,
             "total": stats.scanned,
-            "directories": final_dirs
+            "directories": final_dirs,
+            "failed_files": failed_json,
+            "skipped_files": skipped_json
         })
     );
+
+    crate::state::get_model_manager().set_indexing_issues(stats.failed_files.clone(), stats.skipped_files.clone());
 
     Ok(stats)
 }
@@ -767,6 +804,10 @@ pub struct ReindexStats {
     pub indexed: u64,
     pub skipped: u64,
     pub errors:  u64,
+    /// (path, reason) for each file that errored during extraction/indexing.
+    pub failed_files:  Vec<(String, String)>,
+    /// (path, reason) for each file that was deliberately skipped.
+    pub skipped_files: Vec<(String, String)>,
 }
 
 /// Embed a text batch and commit all upserts in a single transaction.

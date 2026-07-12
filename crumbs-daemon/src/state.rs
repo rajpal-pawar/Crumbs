@@ -23,6 +23,9 @@ pub struct ModelManager {
     active_search_count: AtomicUsize,
     is_indexer_active: AtomicBool,
     is_paused: AtomicBool,
+    
+    last_failed_files: RwLock<Vec<(String, String)>>,
+    last_skipped_files: RwLock<Vec<(String, String)>>,
 }
 
 pub static MODEL_MANAGER: std::sync::OnceLock<ModelManager> = std::sync::OnceLock::new();
@@ -40,6 +43,8 @@ impl ModelManager {
             active_search_count: AtomicUsize::new(0),
             is_indexer_active: AtomicBool::new(false),
             is_paused: AtomicBool::new(false),
+            last_failed_files: RwLock::new(Vec::new()),
+            last_skipped_files: RwLock::new(Vec::new()),
         }
     }
 
@@ -56,6 +61,21 @@ impl ModelManager {
 
     pub fn set_engine_paused(&self, paused: bool) {
         self.is_paused.store(paused, Ordering::SeqCst);
+    }
+
+    pub fn set_indexing_issues(&self, failed: Vec<(String, String)>, skipped: Vec<(String, String)>) {
+        if let Ok(mut lock) = self.last_failed_files.write() {
+            *lock = failed;
+        }
+        if let Ok(mut lock) = self.last_skipped_files.write() {
+            *lock = skipped;
+        }
+    }
+
+    pub fn get_indexing_issues(&self) -> (Vec<(String, String)>, Vec<(String, String)>) {
+        let failed = self.last_failed_files.read().map(|l| l.clone()).unwrap_or_default();
+        let skipped = self.last_skipped_files.read().map(|l| l.clone()).unwrap_or_default();
+        (failed, skipped)
     }
 
     pub fn get_onnx_memory_footprint(&self) -> u64 {

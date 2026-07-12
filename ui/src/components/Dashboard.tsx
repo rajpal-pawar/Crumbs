@@ -16,6 +16,13 @@ interface ProgressPayload {
   skipped?: number;
   total: number;
   directories?: DirEntry[];
+  failed_files?: FileIssue[];
+  skipped_files?: FileIssue[];
+}
+
+interface FileIssue {
+  path: string;
+  reason: string;
 }
 
 interface DaemonStatusResponse {
@@ -26,6 +33,8 @@ interface DaemonStatusResponse {
   watch_dirs: string[];
   embed_batch_size: number;
   onnx_threads: number;
+  failed_files?: FileIssue[];
+  skipped_files?: FileIssue[];
 }
 
 // Middle-truncate path helper
@@ -68,6 +77,9 @@ export default function Dashboard() {
   const [config, setConfig] = useState({ batchSize: 5, threads: 2, indexParallelism: 1 });
   const [managedFolders, setManagedFolders] = useState<string[]>([]);
   const [folderUpdating, setFolderUpdating] = useState(false);
+  const [failedFiles, setFailedFiles] = useState<FileIssue[]>([]);
+  const [skippedFiles, setSkippedFiles] = useState<FileIssue[]>([]);
+  const [showIssues, setShowIssues] = useState(false);
 
   // 1. Fetch daemon status, metrics, and folders on mount and poll every 2.5 seconds
   const fetchStatus = useCallback(async () => {
@@ -84,6 +96,8 @@ export default function Dashboard() {
           batchSize: res.embed_batch_size || prev.batchSize,
           threads: res.onnx_threads || prev.threads,
         }));
+        if (res.failed_files) setFailedFiles(res.failed_files);
+        if (res.skipped_files) setSkippedFiles(res.skipped_files);
       }
     } catch (err) {
       console.error('[Dashboard] Failed to fetch daemon status:', err);
@@ -111,6 +125,8 @@ export default function Dashboard() {
       if (p.directories && p.directories.length > 0) {
         setDirs(p.directories);
       }
+      if (p.failed_files) setFailedFiles(p.failed_files);
+      if (p.skipped_files) setSkippedFiles(p.skipped_files);
     }).then((un) => {
       unlisten = un;
     });
@@ -432,6 +448,96 @@ export default function Dashboard() {
           </div>
           <p className="control-hint">Changes are applied live — the engine picks up new values on its next batch.</p>
         </section>
+
+        {/* INDEXING ISSUES — shows failed/skipped files */}
+        {(failedFiles.length > 0 || skippedFiles.length > 0) && (
+          <section className={glassCard} style={{ padding: '24px', gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <h2 className={sectionTitle} style={{ margin: 0 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                  <line x1="12" y1="9" x2="12" y2="13"/>
+                  <line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+                Indexing Issues
+                <span style={{
+                  fontSize: '10px', fontWeight: 600, padding: '2px 8px', borderRadius: '6px',
+                  background: 'rgba(248,113,113,0.1)', color: '#f87171', marginLeft: '8px',
+                }}>
+                  {failedFiles.length + skippedFiles.length}
+                </span>
+              </h2>
+              <button
+                onClick={() => setShowIssues(!showIssues)}
+                style={{
+                  padding: '4px 12px', borderRadius: '8px', fontSize: '11px', fontWeight: 500,
+                  border: '1px solid var(--c-border)', background: 'var(--c-hit-bg)',
+                  color: 'var(--c-text-muted)', cursor: 'pointer', transition: 'all 200ms ease',
+                }}
+              >
+                {showIssues ? 'Hide' : 'Show Details'}
+              </button>
+            </div>
+
+            {!showIssues && (
+              <div style={{ fontSize: '12px', color: 'var(--c-text-muted)' }}>
+                {failedFiles.length > 0 && <span style={{ color: '#f87171' }}>{failedFiles.length} failed</span>}
+                {failedFiles.length > 0 && skippedFiles.length > 0 && ' · '}
+                {skippedFiles.length > 0 && <span style={{ color: '#facc15' }}>{skippedFiles.length} skipped</span>}
+              </div>
+            )}
+
+            {showIssues && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', maxHeight: '300px', overflowY: 'auto' }}>
+                {failedFiles.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: '10px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#f87171', marginBottom: '8px' }}>
+                      Failed Files ({failedFiles.length})
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      {failedFiles.map((f, i) => (
+                        <div key={i} style={{
+                          padding: '8px 12px', borderRadius: 'var(--radius-md)',
+                          background: 'rgba(248,113,113,0.04)', border: '1px solid rgba(248,113,113,0.1)',
+                          display: 'flex', flexDirection: 'column', gap: '2px',
+                        }}>
+                          <span style={{ fontSize: '11px', color: 'var(--c-text)', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                            {f.path.split('/').pop() || f.path}
+                          </span>
+                          <span style={{ fontSize: '10px', color: '#f87171' }}>{f.reason}</span>
+                          <span style={{ fontSize: '9px', color: 'var(--c-text-muted)', wordBreak: 'break-all' }}>{f.path}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {skippedFiles.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: '10px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#facc15', marginBottom: '8px' }}>
+                      Skipped Files ({skippedFiles.length})
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      {skippedFiles.map((f, i) => (
+                        <div key={i} style={{
+                          padding: '8px 12px', borderRadius: 'var(--radius-md)',
+                          background: 'rgba(250,204,21,0.04)', border: '1px solid rgba(250,204,21,0.08)',
+                          display: 'flex', flexDirection: 'column', gap: '2px',
+                        }}>
+                          <span style={{ fontSize: '11px', color: 'var(--c-text)', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                            {f.path.split('/').pop() || f.path}
+                          </span>
+                          <span style={{ fontSize: '10px', color: '#facc15' }}>{f.reason}</span>
+                          <span style={{ fontSize: '9px', color: 'var(--c-text-muted)', wordBreak: 'break-all' }}>{f.path}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+        )}
       </div>
 
       <footer style={{ textAlign: 'center', fontSize: '10px', color: 'var(--c-score-text)', letterSpacing: '0.1em', textTransform: 'uppercase', marginTop: '8px', position: 'relative', zIndex: 1 }}>
