@@ -365,10 +365,6 @@ fn run_reindex_pipeline_internal_impl(
                     continue; // Reject instantly if it strayed out of bounds
                 }
 
-                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-                if !matches!(ext.as_str(), "txt" | "md" | "pdf" | "png" | "jpg" | "jpeg" | "py" | "c" | "cpp" | "h" | "hpp" | "rs" | "js" | "ts" | "jsx" | "tsx" | "html" | "css" | "json" | "toml" | "yaml" | "yml" | "java" | "go" | "sh" | "bash" | "zsh") {
-                    continue;
-                }
                 producer_scanned.fetch_add(1, Ordering::Relaxed);
                 if path_tx.send(path).is_err() {
                     break;
@@ -432,7 +428,12 @@ fn run_reindex_pipeline_internal_impl(
                 Err(_) => { stats.skipped += 1; continue; }
             };
 
-            if meta.len() > config_clone.max_file_bytes {
+            let is_semantic = {
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                crate::extractor::TEXT_EXTENSIONS.contains(&ext.as_str()) || crate::extractor::IMAGE_EXTENSIONS.contains(&ext.as_str())
+            };
+
+            if is_semantic && meta.len() > config_clone.max_file_bytes {
                 stats.skipped += 1;
                 continue;
             }
@@ -780,7 +781,9 @@ fn flush_text_batch(
                 }
             }
 
-            let full_body = item.chunks.as_ref().map(|c| c.join("\n"));
+            let full_body = item.chunks.as_ref()
+                .filter(|c| !c.is_empty())
+                .map(|c| c.join("\n"));
             let doc = DocumentRecord {
                 path:       &item.path,
                 title:      &item.title,
@@ -900,4 +903,280 @@ fn hit_to_json(h: SearchHit) -> serde_json::Value {
             "fallback": h.sources.fallback,
         }
     })
+}
+
+// ---------------------------------------------------------------------------
+// Background File Watcher Task
+// ---------------------------------------------------------------------------
+
+pub fn start_background_watcher(
+    config: Arc<Config>,
+    db: Arc<Database>,
+    rx: std::sync::mpsc::Receiver<notify::Event>,
+    watcher: notify::RecommendedWatcher,
+) {
+    use notify::event::{ModifyKind, RenameMode};
+    use notify::EventKind;
+    use tracing::error;
+
+    std::thread::spawn(move || {
+        // Keep the watcher alive in this thread context
+        let _watcher = watcher;
+
+        let conn = match rusqlite::Connection::open(config.db_path()) {
+            Ok(c) => c,
+            Err(e) => {
+                error!("Background watcher failed to open SQLite connection: {}", e);
+                return;
+            }
+        };
+
+        if let Err(e) = conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             PRAGMA foreign_keys=ON;"
+        ) {
+            error!("Background watcher failed to set connection PRAGMAs: {}", e);
+            return;
+        }
+
+        if let Err(e) = conn.busy_timeout(std::time::Duration::from_secs(5)) {
+            error!("Background watcher failed to set busy timeout: {}", e);
+            return;
+        }
+
+        loop {
+            match rx.recv() {
+                Ok(event) => {
+                    match event.kind {
+                        EventKind::Modify(ModifyKind::Name(RenameMode::Both)) => {
+                            if event.paths.len() == 2 {
+                                let old_path = &event.paths[0];
+                                let new_path = &event.paths[1];
+
+                                let old_allowed = config.watch_dirs.iter().any(|allowed| old_path.starts_with(allowed));
+                                let new_allowed = config.watch_dirs.iter().any(|allowed| new_path.starts_with(allowed));
+
+                                if old_allowed && new_allowed {
+                                    info!(old = %old_path.display(), new = %new_path.display(), "Handling file rename");
+                                    let old_path_str = old_path.to_string_lossy();
+                                    let new_path_str = new_path.to_string_lossy();
+
+                                    match conn.execute(
+                                        "UPDATE documents SET path = ?1, updated_at = unixepoch() WHERE path = ?2",
+                                        rusqlite::params![new_path_str, old_path_str],
+                                    ) {
+                                        Ok(rows) => {
+                                            if rows > 0 {
+                                                info!(rows, "Updated path in DB for renamed file");
+                                            } else {
+                                                debug!("Renamed old path not found in DB, indexing new path");
+                                                crate::state::get_model_manager().set_indexer_active(true, &config);
+                                                if let Err(e) = index_single_file(&conn, new_path, &config) {
+                                                    error!(path = %new_path.display(), error = %e, "Failed to index renamed destination path");
+                                                }
+                                                crate::state::get_model_manager().set_indexer_active(false, &config);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!("Failed to update database for rename: {}", e);
+                                        }
+                                    }
+                                } else if old_allowed {
+                                    info!(path = %old_path.display(), "File moved out of watched directory, deleting");
+                                    match conn.unchecked_transaction() {
+                                        Ok(tx) => {
+                                            match crate::index::writer::delete(&tx, old_path) {
+                                                Ok(deleted) => {
+                                                    if deleted {
+                                                        let _ = tx.commit();
+                                                        info!(path = %old_path.display(), "Deleted document from DB");
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    error!(path = %old_path.display(), error = %e, "Failed to delete document from DB");
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!("Failed to begin delete transaction: {}", e);
+                                        }
+                                    }
+                                } else if new_allowed {
+                                    info!(path = %new_path.display(), "File moved into watched directory, indexing");
+                                    crate::state::get_model_manager().set_indexer_active(true, &config);
+                                    if let Err(e) = index_single_file(&conn, new_path, &config) {
+                                        error!(path = %new_path.display(), error = %e, "Failed to index new file");
+                                    }
+                                    crate::state::get_model_manager().set_indexer_active(false, &config);
+                                }
+                            }
+                        }
+                        EventKind::Create(_) | EventKind::Modify(_) => {
+                            for path in &event.paths {
+                                if !config.watch_dirs.iter().any(|allowed| path.starts_with(allowed)) {
+                                    continue;
+                                }
+                                if !path.exists() {
+                                    continue;
+                                }
+
+                                info!(path = %path.display(), "Handling file create/modify");
+                                crate::state::get_model_manager().set_indexer_active(true, &config);
+                                if let Err(e) = index_single_file(&conn, path, &config) {
+                                    error!(path = %path.display(), error = %e, "Failed to index file");
+                                }
+                                crate::state::get_model_manager().set_indexer_active(false, &config);
+                            }
+                        }
+                        EventKind::Remove(_) => {
+                            for path in &event.paths {
+                                if !config.watch_dirs.iter().any(|allowed| path.starts_with(allowed)) {
+                                    continue;
+                                }
+                                info!(path = %path.display(), "Handling file removal");
+                                match conn.unchecked_transaction() {
+                                    Ok(tx) => {
+                                        match crate::index::writer::delete(&tx, path) {
+                                            Ok(deleted) => {
+                                                if deleted {
+                                                    let _ = tx.commit();
+                                                    info!(path = %path.display(), "Deleted document from DB");
+                                                }
+                                            }
+                                            Err(e) => {
+                                                error!(path = %path.display(), error = %e, "Failed to delete document from DB");
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to begin delete transaction: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Err(_) => break, // Channel closed
+            }
+        }
+    });
+}
+
+fn index_single_file(
+    conn: &rusqlite::Connection,
+    path: &std::path::Path,
+    config: &Config,
+) -> Result<(), String> {
+    use crate::index::writer::{DocumentRecord, EmbeddingRecord};
+    use crate::extractor::{self, Extracted};
+    use crate::embed;
+
+    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+
+    let is_semantic = {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        crate::extractor::TEXT_EXTENSIONS.contains(&ext.as_str()) || crate::extractor::IMAGE_EXTENSIONS.contains(&ext.as_str())
+    };
+
+    if is_semantic && meta.len() > config.max_file_bytes {
+        return Ok(());
+    }
+
+    let extracted = match extractor::extract(path, config) {
+        Ok(Some(e)) => e,
+        Ok(None) => return Ok(()),
+        Err(e) => return Err(e.to_string()),
+    };
+
+    let title = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let checksum = extracted.checksum().to_owned();
+    let mime_type = extracted.mime_type().to_owned();
+    let size_bytes = meta.len();
+
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+
+    match extracted {
+        extractor::Extracted::Text { chunks, .. } => {
+            let mut texts_to_embed = Vec::new();
+            for chunk in &chunks {
+                if !chunk.trim().is_empty() {
+                    texts_to_embed.push(chunk.clone());
+                }
+            }
+
+            let embeddings = if texts_to_embed.is_empty() {
+                None
+            } else {
+                match embed::embed_text_batch(&texts_to_embed, config) {
+                    Ok(vecs) => Some(vecs),
+                    Err(e) => {
+                        warn!("embedding failed for single file: {}", e);
+                        None
+                    }
+                }
+            };
+
+            let mut emb_records = Vec::new();
+            if let Some(embeddings) = embeddings {
+                for vecs in embeddings {
+                    for v in vecs {
+                        emb_records.push(EmbeddingRecord { vector: v });
+                    }
+                }
+            }
+
+            let full_body = if chunks.is_empty() {
+                None
+            } else {
+                Some(chunks.join("\n"))
+            };
+
+            let doc = DocumentRecord {
+                path,
+                title: &title,
+                body: full_body.as_deref(),
+                mime_type: &mime_type,
+                checksum: &checksum,
+                size_bytes,
+            };
+
+            crate::index::writer::upsert(&tx, &doc, &emb_records).map_err(|e| e.to_string())?;
+        }
+        extractor::Extracted::Image { image, .. } => {
+            let embeddings = match embed::embed_image_batch(&[image], config) {
+                Ok(mut vecs) => {
+                    if vecs.is_empty() {
+                        None
+                    } else {
+                        Some(vecs.remove(0))
+                    }
+                }
+                Err(e) => {
+                    warn!("CLIP embedding failed for single image: {}", e);
+                    None
+                }
+            };
+
+            let mut emb_records = Vec::new();
+            if let Some(v) = embeddings {
+                emb_records.push(EmbeddingRecord { vector: v });
+            }
+
+            let doc = DocumentRecord {
+                path,
+                title: &title,
+                body: None,
+                mime_type: &mime_type,
+                checksum: &checksum,
+                size_bytes,
+            };
+
+            crate::index::writer::upsert(&tx, &doc, &emb_records).map_err(|e| e.to_string())?;
+        }
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
 }

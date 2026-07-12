@@ -115,7 +115,7 @@ impl Extracted {
 // ---------------------------------------------------------------------------
 
 /// Extensions we treat as plain text and feed to MiniLM.
-const TEXT_EXTENSIONS: &[&str] = &[
+pub const TEXT_EXTENSIONS: &[&str] = &[
     "txt", "md", "markdown", "rst", "adoc",
     "rs",  "py", "js",  "ts",  "jsx", "tsx",
     "go",  "c",  "cpp", "h",   "hpp", "java",
@@ -126,7 +126,7 @@ const TEXT_EXTENSIONS: &[&str] = &[
 ];
 
 /// Extensions we treat as images and route to the CLIP stub.
-const IMAGE_EXTENSIONS: &[&str] = &[
+pub const IMAGE_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "webp", "bmp", "gif", "tiff", "tif",
 ];
 
@@ -158,14 +158,30 @@ pub fn extract(path: &Path, config: &Config) -> Result<Option<Extracted>, Extrac
     } else if IMAGE_EXTENSIONS.contains(&ext.as_str()) {
         extract_image(path).map(Some)
     } else {
-        // Unknown extension — sniff the first 8 KB for null bytes.
-        if is_binary(path)? {
-            debug!(path = %path.display(), "skipping binary file (null-byte sniff)");
-            Ok(None)
-        } else {
-            // Unknown text-like file — attempt text extraction.
-            extract_text(path, config)
+        // Unsupported media/binary file or unknown extension.
+        // Skip the AI pipeline entirely, but compute SHA-256 and MIME type.
+        let file = File::open(path).map_err(ExtractError::Io)?;
+        let mut reader = BufReader::new(file);
+        let mut hasher = Sha256::new();
+        let mut chunk = vec![0u8; 64 * 1024];
+        loop {
+            let n = reader.read(&mut chunk).map_err(ExtractError::Io)?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&chunk[..n]);
         }
+        let checksum = hex::encode(hasher.finalize());
+
+        let mime_type = mime_guess::from_path(path)
+            .first_or(mime_guess::mime::APPLICATION_OCTET_STREAM)
+            .to_string();
+
+        Ok(Some(Extracted::Text {
+            chunks: Vec::new(),
+            checksum,
+            mime_type,
+        }))
     }
 }
 

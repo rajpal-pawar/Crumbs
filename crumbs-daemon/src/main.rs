@@ -168,13 +168,16 @@ async fn main() {
         // 7. Background File Watcher
         // -------------------------------------------------------------------
         // Now that the initial crawl is done, watch for real-time file changes.
-        use notify::{Watcher, RecursiveMode, EventKind};
+        use notify::{Watcher, RecursiveMode};
         use std::sync::mpsc::channel;
-        use std::time::Duration;
 
-        let (tx, rx) = channel();
+        let (tx, rx) = channel::<notify::Event>();
         let mut watcher = match notify::RecommendedWatcher::new(
-            move |res| { let _ = tx.send(res); },
+            move |res| {
+                if let Ok(event) = res {
+                    let _ = tx.send(event);
+                }
+            },
             notify::Config::default()
         ) {
             Ok(w) => w,
@@ -194,38 +197,8 @@ async fn main() {
             }
         }
 
-        // Loop to listen for file changes
-        tokio::task::spawn_blocking(move || {
-            // Keep the watcher alive by moving it into this closure
-            let _watcher = watcher;
-            
-            loop {
-                match rx.recv() {
-                    Ok(Ok(event)) => {
-                        // Only trigger reindex for actual content changes
-                        match event.kind {
-                            EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_) => {
-                                // Wait a bit to let file writes finish and debounce multiple events
-                                std::thread::sleep(Duration::from_millis(500));
-                                
-                                // Drain any other events that fired in the meantime
-                                while let Ok(_) = rx.try_recv() {}
-
-                                info!("detected file changes, triggering reindex...");
-                                if let Err(e) = handlers::run_reindex_pipeline(&crawl_config, &crawl_db) {
-                                    error!(error = %e, "file watcher reindex failed");
-                                } else {
-                                    info!("file watcher reindex completed");
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    Ok(Err(e)) => warn!("watch error: {}", e),
-                    Err(_) => break, // Channel closed
-                }
-            }
-        });
+        // Spawn dedicated background watcher task
+        handlers::start_background_watcher(crawl_config, crawl_db, rx, watcher);
     });
 
     let _ = ipc_handle.await;
