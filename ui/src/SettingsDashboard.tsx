@@ -20,6 +20,9 @@ export interface DirEntry {
 interface ProgressPayload {
   status: string;
   indexed: number;
+  processed?: number;
+  errors?: number;
+  skipped?: number;
   total: number;
   directories?: DirEntry[];
 }
@@ -94,6 +97,9 @@ export interface SettingsDashboardProps {
 export default function SettingsDashboard({ open, onClose }: SettingsDashboardProps) {
   const [dirs, setDirs] = useState<DirEntry[]>([]);
   const [indexed, setIndexed] = useState(0);
+  const [processed, setProcessed] = useState(0);
+  const [errors, setErrors] = useState(0);
+  const [skipped, setSkipped] = useState(0);
   const [total, setTotal] = useState(0);
   const [status, setStatus] = useState<string>('idle');
   const [config, setConfig] = useState<EngineConfig>({ batchSize: 5, threads: 2 });
@@ -119,6 +125,9 @@ export default function SettingsDashboard({ open, onClose }: SettingsDashboardPr
       const p = event.payload;
       if (!p) return;
       if (p.indexed !== undefined) setIndexed(p.indexed);
+      if (p.processed !== undefined) setProcessed(p.processed);
+      if (p.errors !== undefined) setErrors(p.errors || 0);
+      if (p.skipped !== undefined) setSkipped(p.skipped || 0);
       if (p.total !== undefined) setTotal(p.total);
       if (p.status) setStatus(p.status);
       if (p.directories && p.directories.length > 0) {
@@ -225,7 +234,8 @@ export default function SettingsDashboard({ open, onClose }: SettingsDashboardPr
   if (!open) return null;
 
   const isActive = status === 'indexing' || status === 'scanning';
-  const pct = total > 0 ? Math.round((indexed / total) * 100) : 0;
+  const effectiveProcessed = Math.max(processed, indexed + errors + skipped);
+  const pct = total > 0 ? Math.min(100, Math.round((effectiveProcessed / total) * 100)) : 0;
 
   return (
     <div className="dashboard-overlay" aria-modal="true" role="dialog" aria-label="Settings Dashboard">
@@ -256,7 +266,20 @@ export default function SettingsDashboard({ open, onClose }: SettingsDashboardPr
           </div>
           <div className="dashboard-progress__label">
             <PulseDot active={isActive} />
-            <span>{isActive ? `Indexing ${indexed.toLocaleString()} / ${total.toLocaleString()} files…` : total > 0 ? `${total.toLocaleString()} files indexed` : 'Idle'}</span>
+            <span>
+              {isActive 
+                ? `Processing ${effectiveProcessed.toLocaleString()} / ${total.toLocaleString()} files…` 
+                : total > 0 
+                  ? `${effectiveProcessed.toLocaleString()} / ${total.toLocaleString()} files processed` 
+                  : 'Idle'}
+              {effectiveProcessed > 0 && (
+                <span className="dashboard-progress__details">
+                  {" "}({indexed.toLocaleString()} indexed
+                  {errors > 0 ? `, ${errors.toLocaleString()} failed` : ''}
+                  {skipped > 0 ? `, ${skipped.toLocaleString()} skipped` : ''})
+                </span>
+              )}
+            </span>
             {total > 0 && <span className="dashboard-progress__pct">{pct}%</span>}
           </div>
         </div>

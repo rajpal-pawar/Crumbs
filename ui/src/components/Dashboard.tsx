@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { ThemeToggle } from '../ThemeContext';
 
 export interface DirEntry {
   path: string;
@@ -10,6 +11,9 @@ export interface DirEntry {
 interface ProgressPayload {
   status: string;
   indexed: number;
+  processed?: number;
+  errors?: number;
+  skipped?: number;
   total: number;
   directories?: DirEntry[];
 }
@@ -50,6 +54,9 @@ function useDebouncedCallback<T extends (...args: any[]) => void>(
 export default function Dashboard() {
   const [dirs, setDirs] = useState<DirEntry[]>([]);
   const [indexed, setIndexed] = useState(0);
+  const [processed, setProcessed] = useState(0);
+  const [errors, setErrors] = useState(0);
+  const [skipped, setSkipped] = useState(0);
   const [total, setTotal] = useState(0);
   const [status, setStatus] = useState('idle');
   const [paused, setPaused] = useState(false);
@@ -96,6 +103,9 @@ export default function Dashboard() {
       const p = event.payload;
       if (!p) return;
       if (p.indexed !== undefined) setIndexed(p.indexed);
+      if (p.processed !== undefined) setProcessed(p.processed);
+      if (p.errors !== undefined) setErrors(p.errors || 0);
+      if (p.skipped !== undefined) setSkipped(p.skipped || 0);
       if (p.total !== undefined) setTotal(p.total);
       if (p.status) setStatus(p.status);
       if (p.directories && p.directories.length > 0) {
@@ -188,333 +198,244 @@ export default function Dashboard() {
 
   // Format bytes to human readable sizes
   const formatBytes = (bytes: number): string => {
-    if (bytes === 0) return '0 Bytes';
+    if (bytes === 0) return '0 B';
     const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const sizes = ['B', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
   };
 
   const isEngineActive = (status === 'indexing' || status === 'scanning') && !paused;
-  const pct = total > 0 ? Math.round((indexed / total) * 100) : 0;  return (
-    <div className="min-h-screen bg-[#070709] text-zinc-100 font-sans p-8 flex flex-col gap-6 selection:bg-indigo-500/30 relative overflow-hidden z-0">
-      
-      {/* Decorative ambient background glow blobs for glassmorphism */}
-      <div className="absolute top-[-10%] right-[-15%] w-[60vw] h-[60vw] rounded-full bg-indigo-600/10 blur-[130px] pointer-events-none -z-10" />
-      <div className="absolute bottom-[-15%] left-[-15%] w-[60vw] h-[60vw] rounded-full bg-violet-600/8 blur-[130px] pointer-events-none -z-10" />
-      <div className="absolute top-[35%] left-[20%] w-[40vw] h-[40vw] rounded-full bg-fuchsia-600/4 blur-[120px] pointer-events-none -z-10" />
+  const effectiveProcessed = Math.max(processed, indexed + errors + skipped);
+  const pct = total > 0 ? Math.min(100, Math.round((effectiveProcessed / total) * 100)) : 0;
 
-      {/* ── SECTION 1: HEADER BLOCK (Global Telemetry) ── */}
-      <header className="bg-zinc-900/35 backdrop-blur-xl border border-white/[0.04] rounded-2xl shadow-[0_8px_32px_0_rgba(0,0,0,0.37)] p-6 flex flex-col md:flex-row md:items-center justify-between gap-6 relative overflow-hidden group/card hover:border-white/[0.08] transition-all duration-300">
-        <div className="flex-1 flex flex-col gap-2">
-          <div className="flex items-center gap-3">
-            <div className={`w-3 h-3 rounded-full ${paused ? 'bg-zinc-500 shadow-[0_0_12px_rgba(113,113,122,0.5)]' : isEngineActive ? 'bg-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.8)] animate-pulse' : 'bg-zinc-650 shadow-[0_0_12px_rgba(113,113,122,0.3)]'}`} />
-            <h1 className="text-xl font-bold tracking-tight text-white">Crumbs Engine Telemetry</h1>
-            <span className="text-[10px] font-sans font-semibold px-2 py-0.5 rounded bg-white/5 border border-white/10 text-zinc-400 uppercase tracking-wider">
+  // CSS classes for glass cards
+  const glassCard = "glass-card";
+  const sectionTitle = "dashboard-section__title";
+
+  return (
+    <div style={{
+      minHeight: '100vh',
+      background: 'var(--c-bg)',
+      color: 'var(--c-text)',
+      fontFamily: "'Inter', system-ui, sans-serif",
+      padding: '24px',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '20px',
+      position: 'relative',
+      overflow: 'hidden',
+    }}>
+      
+      {/* Ambient glass blobs */}
+      <div style={{
+        position: 'absolute', top: '-10%', right: '-15%',
+        width: '60vw', height: '60vw', borderRadius: '50%',
+        background: 'rgba(110,142,251,0.08)', filter: 'blur(130px)',
+        pointerEvents: 'none', zIndex: 0,
+      }} />
+      <div style={{
+        position: 'absolute', bottom: '-15%', left: '-15%',
+        width: '60vw', height: '60vw', borderRadius: '50%',
+        background: 'rgba(167,139,250,0.06)', filter: 'blur(130px)',
+        pointerEvents: 'none', zIndex: 0,
+      }} />
+
+      {/* HEADER — Global Telemetry */}
+      <header className={glassCard} style={{ padding: '24px', position: 'relative', zIndex: 1 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <div style={{
+              width: '10px', height: '10px', borderRadius: '50%',
+              background: paused ? '#71717a' : isEngineActive ? 'var(--c-accent)' : '#52525b',
+              boxShadow: isEngineActive ? '0 0 14px rgba(110,142,251,0.7)' : 'none',
+              animation: isEngineActive ? 'pulse 1.5s ease infinite' : 'none',
+            }} />
+            <h1 style={{ fontSize: '18px', fontWeight: 700, letterSpacing: '-0.02em' }}>Crumbs Engine</h1>
+            <span style={{
+              fontSize: '10px', fontWeight: 600, padding: '2px 8px', borderRadius: '6px',
+              background: 'var(--c-hit-bg)', border: '1px solid var(--c-border)',
+              color: 'var(--c-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em',
+            }}>
               {paused ? 'PAUSED' : isEngineActive ? 'CRAWLING' : 'IDLE'}
             </span>
           </div>
-          
-          <div className="flex justify-between items-center text-xs text-zinc-450 mt-2">
-            <span>Progress: <span className="font-mono text-zinc-200 font-semibold">{indexed.toLocaleString()}</span> / <span className="font-mono text-zinc-200 font-semibold">{total.toLocaleString()}</span> files indexed</span>
-            <span className="font-mono text-indigo-400 font-bold">{pct}%</span>
-          </div>
-          
-          {/* Glass-styled Neon gradient progress bar */}
-          <div className="w-full bg-zinc-950/60 backdrop-blur-sm rounded-full h-2.5 overflow-hidden border border-white/[0.03]">
-            <div
-              className={`h-full rounded-full bg-gradient-to-r from-indigo-500 via-violet-500 to-fuchsia-500 transition-all duration-500 ease-out shadow-[0_0_12px_rgba(139,92,246,0.3)] ${isEngineActive ? 'animate-pulse' : ''}`}
-              style={{ width: `${pct}%` }}
-            />
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <ThemeToggle />
+            <button onClick={handleTogglePause} style={{
+              padding: '8px 16px', borderRadius: '10px', fontWeight: 600, fontSize: '11px',
+              border: '1px solid var(--c-border)', cursor: 'pointer',
+              background: paused ? 'var(--c-hit-bg)' : 'rgba(110,142,251,0.1)',
+              color: paused ? 'var(--c-text-muted)' : 'var(--c-accent)',
+              textTransform: 'uppercase', letterSpacing: '0.06em',
+              display: 'flex', alignItems: 'center', gap: '6px',
+              transition: 'all 200ms ease',
+            }}>
+              {paused ? (
+                <><svg style={{width:'12px',height:'12px',fill:'currentColor'}} viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>Resume</>
+              ) : (
+                <><svg style={{width:'12px',height:'12px',fill:'currentColor'}} viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>Pause</>
+              )}
+            </button>
           </div>
         </div>
 
-        {/* Toggle Pause Switch */}
-        <button
-          onClick={handleTogglePause}
-          className={`px-5 py-2.5 rounded-xl font-semibold border text-xs tracking-wider uppercase transition-all duration-300 flex items-center gap-2 cursor-pointer active:scale-[0.98] ${
-            paused
-              ? 'bg-zinc-800/40 text-zinc-300 border-white/[0.04] hover:bg-zinc-800/70 hover:border-white/[0.08] hover:text-white'
-              : 'bg-indigo-500/10 text-indigo-300 border-indigo-500/20 hover:bg-indigo-500/20 hover:border-indigo-500/40 hover:shadow-[0_0_15px_rgba(99,102,241,0.15)]'
-          }`}
-        >
-          {paused ? (
-            <>
-              <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
-                <path d="M8 5v14l11-7z" />
-              </svg>
-              Resume Engine
-            </>
-          ) : (
-            <>
-              <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
-                <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
-              </svg>
-              Pause Engine
-            </>
-          )}
-        </button>
+        {/* Progress */}
+        <div style={{ marginTop: '16px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: 'var(--c-text-muted)', marginBottom: '6px' }}>
+            <span>
+              <span style={{ color: 'var(--c-text)', fontWeight: 600, fontFamily: 'monospace' }}>{effectiveProcessed.toLocaleString()}</span> / <span style={{ color: 'var(--c-text)', fontWeight: 600, fontFamily: 'monospace' }}>{total.toLocaleString()}</span> files
+              {effectiveProcessed > 0 && <span> ({indexed.toLocaleString()} indexed{errors > 0 ? `, ${errors} failed` : ''}{skipped > 0 ? `, ${skipped} skipped` : ''})</span>}
+            </span>
+            <span style={{ color: 'var(--c-accent)', fontWeight: 700, fontFamily: 'monospace' }}>{pct}%</span>
+          </div>
+          <div className="dashboard-progress__bar">
+            <div className={`dashboard-progress__fill ${isEngineActive ? 'dashboard-progress__fill--active' : ''}`} style={{ width: `${pct}%` }} />
+          </div>
+        </div>
       </header>
 
-      {/* Bento Grid Panel Layout */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 auto-rows-[250px] md:auto-rows-[220px]">
+      {/* BENTO GRID */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px', position: 'relative', zIndex: 1 }}>
         
-        {/* ── SECTION 2: DIRECTORY MATRIX (Large Left-Column Tile) ── */}
-        <section className="bg-zinc-900/35 backdrop-blur-xl border border-white/[0.04] rounded-2xl shadow-[0_8px_32px_0_rgba(0,0,0,0.37)] p-6 md:col-span-2 md:row-span-2 flex flex-col justify-between hover:border-white/[0.08] transition-all duration-300 group/card">
-          <div className="flex flex-col gap-4 overflow-hidden h-full">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <svg className="w-4 h-4 text-zinc-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                </svg>
-                <h2 className="text-zinc-400 text-sm font-semibold tracking-wide uppercase my-auto">Monitored Folder Matrix</h2>
-              </div>
-              <button
-                onClick={handleAddFolder}
-                disabled={folderUpdating}
-                className="text-xs bg-white/5 border border-white/10 hover:bg-white/10 hover:border-white/25 text-indigo-400 px-3 py-1.5 rounded-lg flex items-center gap-1.5 cursor-pointer disabled:opacity-50 transition-all active:scale-[0.97]"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-                </svg>
-                Add Folder
-              </button>
-            </div>
-
-            {/* Matrix grid list of folders */}
-            <div className="flex-1 overflow-y-auto pr-1 flex flex-col gap-2 mt-2">
-              {managedFolders.length === 0 ? (
-                <div className="flex-1 flex items-center justify-center border border-dashed border-white/10 rounded-xl p-6 text-zinc-500 text-xs bg-zinc-950/20">
-                  No folders registered. Click 'Add Folder' to start mapping directory files.
-                </div>
-              ) : (
-                managedFolders.map((path) => {
-                  const pathLower = path.toLowerCase();
-                  const dirEntry = dirs.find(d => pathLower.includes(d.path.replace(/^~\//, '').toLowerCase()) || d.path.toLowerCase().includes(pathLower));
-                  const state = dirEntry ? dirEntry.state : 'completed';
-
-                  return (
-                    <div key={path} className="flex items-center justify-between p-3 rounded-xl bg-zinc-950/30 border border-white/[0.02] hover:bg-zinc-950/60 hover:border-white/[0.06] transition-all duration-200 group/item">
-                      <div className="flex flex-col gap-0.5 min-w-0">
-                        <span className="font-mono text-xs text-zinc-300 truncate" title={path}>
-                          {truncatePath(path)}
-                        </span>
-                        <div className="flex items-center gap-2">
-                          <span className={`text-[10px] uppercase font-bold tracking-wider ${
-                            state === 'scanning' ? 'text-amber-400 animate-pulse' :
-                            state === 'indexing' ? 'text-indigo-400 animate-pulse' :
-                            state === 'queued' ? 'text-zinc-500' : 'text-emerald-400 font-semibold'
-                          }`}>
-                            {state}
-                          </span>
-                        </div>
-                      </div>
-                      
-                      <button
-                        onClick={() => handleRemoveFolder(path)}
-                        disabled={folderUpdating}
-                        className="opacity-0 group-hover/item:opacity-100 text-zinc-500 hover:text-red-400 p-1.5 hover:bg-red-500/10 rounded-lg transition-all duration-250 cursor-pointer"
-                        title="Remove Folder"
-                      >
-                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                        </svg>
-                      </button>
-                    </div>
-                  );
-                })
-              )}
-            </div>
+        {/* FOLDER MATRIX (spans 2 cols on wide) */}
+        <section className={glassCard} style={{ padding: '24px', gridColumn: 'span 2', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <h2 className={sectionTitle} style={{ margin: 0 }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+              </svg>
+              Monitored Folders
+            </h2>
+            <button className="managed-folder-add-btn" style={{ width: 'auto', margin: 0, padding: '6px 12px', fontSize: '11px' }} onClick={handleAddFolder} disabled={folderUpdating}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" d="M12 4v16m8-8H4"/></svg>
+              Add
+            </button>
           </div>
-        </section>
-
-        {/* ── SECTION 3: LIVE THREAD VISUALIZER (Center Tile) ── */}
-        <section className="bg-zinc-900/35 backdrop-blur-xl border border-white/[0.04] rounded-2xl shadow-[0_8px_32px_0_rgba(0,0,0,0.37)] p-6 flex flex-col justify-between relative overflow-hidden hover:border-white/[0.08] transition-all duration-300 group/card">
-          <div className="flex items-center gap-2">
-            <svg className="w-4 h-4 text-zinc-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
-            </svg>
-            <h2 className="text-zinc-400 text-sm font-semibold tracking-wide uppercase">Live CPU Threads</h2>
-          </div>
-
-          {/* Central CSS graphical visualizer */}
-          <div className="flex-1 flex items-center justify-center my-4 relative">
-            
-            {/* Core engine visualizer */}
-            <div className={`w-12 h-12 rounded-full flex items-center justify-center bg-zinc-950/60 border border-white/5 backdrop-blur-md z-10 relative ${isEngineActive ? 'shadow-[0_0_20px_rgba(99,102,241,0.2)] animate-pulse' : ''}`}>
-              <div className={`w-3.5 h-3.5 rounded-full ${paused ? 'bg-zinc-500 shadow-[0_0_12px_rgba(113,113,122,0.4)]' : isEngineActive ? 'bg-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.8)] animate-ping' : 'bg-zinc-650 shadow-[0_0_12px_rgba(113,113,122,0.2)]'}`} />
-            </div>
-
-            {/* Orbiting slots visualizer */}
-            <div className="absolute inset-0 flex items-center justify-center">
-              {Array.from({ length: config.threads || 2 }).map((_, i, arr) => {
-                const angle = (360 / arr.length) * i;
-                const distance = 42; // px from center
-                const x = Math.cos((angle * Math.PI) / 180) * distance;
-                const y = Math.sin((angle * Math.PI) / 180) * distance;
-                
-                return (
-                  <div
-                    key={i}
-                    style={{
-                      transform: `translate(${x}px, ${y}px)`,
-                      transition: 'transform 0.5s ease',
-                    }}
-                    className={`absolute w-5 h-5 rounded-full bg-zinc-950/70 border text-[9px] font-sans font-semibold flex items-center justify-center backdrop-blur-sm ${
-                      paused
-                        ? 'border-white/5 text-zinc-600'
-                        : isEngineActive
-                        ? 'border-indigo-500/60 text-indigo-300 shadow-[0_0_10px_rgba(99,102,241,0.2)] animate-pulse'
-                        : 'border-white/5 text-zinc-500'
-                    }`}
-                  >
-                    T{i + 1}
+          <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            {managedFolders.length === 0 ? (
+              <div className="dashboard-empty"><span className="dashboard-empty__text">No folders registered. Add folders to start indexing.</span></div>
+            ) : managedFolders.map((path) => {
+              const pathLower = path.toLowerCase();
+              const dirEntry = dirs.find(d => pathLower.includes(d.path.replace(/^~\//, '').toLowerCase()) || d.path.toLowerCase().includes(pathLower));
+              const state = dirEntry ? dirEntry.state : 'completed';
+              return (
+                <div key={path} className="dir-list__item">
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 }}>
+                    <span className="dir-list__path" title={path}>{truncatePath(path)}</span>
+                    <span className={`dir-badge dir-badge--${state}`} style={{ alignSelf: 'flex-start' }}>{state}</span>
                   </div>
-                );
-              })}
-            </div>
-
-            {/* Ambient rotating rings when engine is active */}
-            {isEngineActive && (
-              <>
-                <div className="absolute w-24 h-24 border border-dashed border-indigo-500/20 rounded-full animate-spin [animation-duration:6s]" />
-                <div className="absolute w-28 h-28 border border-dashed border-violet-500/10 rounded-full animate-spin [animation-duration:8s] [animation-direction:reverse]" />
-              </>
-            )}
-          </div>
-
-          <div className="text-center font-sans text-[10px] text-zinc-500 uppercase tracking-wider">
-            {isEngineActive ? `Indexing batches with ${config.threads} thread workers` : paused ? 'Thread pool suspended' : 'Thread workers idle'}
+                  <button className="dir-list__remove" onClick={() => handleRemoveFolder(path)} disabled={folderUpdating} title="Remove">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                    </svg>
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </section>
 
-        {/* ── SECTION 4: SYSTEM METRICS TILE (Right Column - Small) ── */}
-        <section className="bg-zinc-900/35 backdrop-blur-xl border border-white/[0.04] rounded-2xl shadow-[0_8px_32px_0_rgba(0,0,0,0.37)] p-6 flex flex-col justify-between hover:border-white/[0.08] transition-all duration-300 group/card">
-          <div className="flex items-center gap-2">
-            <svg className="w-4 h-4 text-zinc-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2m0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 002 2h2a2 2 0 002-2z" />
-            </svg>
-            <h2 className="text-zinc-400 text-sm font-semibold tracking-wide uppercase">System Metrics</h2>
-          </div>
-
-          <div className="flex flex-col gap-3 my-2">
-            {/* Database Size metric */}
-            <div className="flex justify-between items-center p-3 rounded-xl bg-zinc-950/30 border border-white/[0.02]">
-              <div className="flex flex-col">
-                <span className="text-[10px] font-sans font-semibold text-zinc-500 uppercase tracking-wider">Database Size</span>
-                <span className="text-base font-bold text-white font-mono">{formatBytes(dbSize)}</span>
-              </div>
-              <svg className="w-5 h-5 text-zinc-600" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M4 7v10c0 2 1.5 3 3.5 3h9c2 0 3.5-1 3.5-3V7c0-2-1.5-3-3.5-3h-9C5.5 4 4 5 4 7zm0 0c0 1 1.5 1.5 3.5 1.5h9c2 0 3.5-.5 3.5-1.5M4 12c0 1 1.5 1.5 3.5 1.5h9c2 0 3.5-.5 3.5-1.5" />
-              </svg>
+        {/* THREAD VISUALIZER */}
+        <section className={glassCard} style={{ padding: '24px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', position: 'relative', overflow: 'hidden' }}>
+          <h2 className={sectionTitle}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+            Live Threads
+          </h2>
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative' }}>
+            <div style={{
+              width: '48px', height: '48px', borderRadius: '50%',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: 'var(--c-hit-bg)', border: '1px solid var(--c-border)',
+              backdropFilter: 'blur(8px)', zIndex: 2,
+              boxShadow: isEngineActive ? '0 0 20px rgba(110,142,251,0.2)' : 'none',
+            }}>
+              <div style={{
+                width: '14px', height: '14px', borderRadius: '50%',
+                background: paused ? '#71717a' : isEngineActive ? 'var(--c-accent)' : '#52525b',
+                boxShadow: isEngineActive ? '0 0 15px rgba(110,142,251,0.8)' : 'none',
+                animation: isEngineActive ? 'pulse 1.5s ease infinite' : 'none',
+              }} />
             </div>
-
-            {/* ONNX Model Cache footprint */}
-            <div className="flex justify-between items-center p-3 rounded-xl bg-zinc-950/30 border border-white/[0.02]">
-              <div className="flex flex-col">
-                <span className="text-[10px] font-sans font-semibold text-zinc-500 uppercase tracking-wider">Active ONNX RAM</span>
-                <span className="text-base font-bold text-white font-mono">{formatBytes(onnxMemory)}</span>
-              </div>
-              <svg className="w-5 h-5 text-zinc-600" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-              </svg>
-            </div>
+            {Array.from({ length: config.threads || 2 }).map((_, i, arr) => {
+              const angle = (360 / arr.length) * i;
+              const d = 42;
+              const x = Math.cos((angle * Math.PI) / 180) * d;
+              const y = Math.sin((angle * Math.PI) / 180) * d;
+              return (
+                <div key={i} style={{
+                  position: 'absolute', transform: `translate(${x}px, ${y}px)`,
+                  width: '22px', height: '22px', borderRadius: '50%',
+                  background: 'var(--c-hit-bg)', border: `1px solid ${isEngineActive ? 'rgba(110,142,251,0.5)' : 'var(--c-border)'}`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: '9px', fontWeight: 600, color: isEngineActive ? 'var(--c-accent)' : 'var(--c-text-muted)',
+                  backdropFilter: 'blur(4px)', transition: 'all 0.5s ease',
+                  animation: isEngineActive ? 'pulse 1.5s ease infinite' : 'none',
+                }}>T{i+1}</div>
+              );
+            })}
           </div>
+          <div style={{ textAlign: 'center', fontSize: '10px', color: 'var(--c-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+            {isEngineActive ? `${config.threads} thread workers active` : paused ? 'Suspended' : 'Idle'}
+          </div>
+        </section>
 
-          <div className="font-sans text-[10px] text-zinc-400 flex justify-between">
+        {/* SYSTEM METRICS */}
+        <section className={glassCard} style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <h2 className={sectionTitle}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2m0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 002 2h2a2 2 0 002-2z"/></svg>
+            System Metrics
+          </h2>
+          {[
+            { label: 'Database Size', value: formatBytes(dbSize) },
+            { label: 'ONNX RAM', value: formatBytes(onnxMemory) },
+          ].map(m => (
+            <div key={m.label} style={{
+              padding: '12px', borderRadius: 'var(--radius-md)',
+              background: 'var(--c-hit-bg)', border: '1px solid var(--c-border)',
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            }}>
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <span style={{ fontSize: '10px', fontWeight: 600, color: 'var(--c-text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{m.label}</span>
+                <span style={{ fontSize: '16px', fontWeight: 700, fontFamily: 'monospace' }}>{m.value}</span>
+              </div>
+            </div>
+          ))}
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--c-text-muted)' }}>
             <span>Indexed Documents:</span>
-            <span className="text-indigo-400 font-bold font-mono">{docCount.toLocaleString()}</span>
+            <span style={{ color: 'var(--c-accent)', fontWeight: 700, fontFamily: 'monospace' }}>{docCount.toLocaleString()}</span>
           </div>
         </section>
 
-        {/* ── SECTION 5: ENGINE TUNING SLIDERS (Bottom Tile) ── */}
-        <section className="bg-zinc-900/35 backdrop-blur-xl border border-white/[0.04] rounded-2xl shadow-[0_8px_32px_0_rgba(0,0,0,0.37)] p-6 md:col-span-3 flex flex-col justify-between hover:border-white/[0.08] transition-all duration-300 group/card">
-          <div className="flex items-center gap-2">
-            <svg className="w-4 h-4 text-zinc-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
-            </svg>
-            <h2 className="text-zinc-400 text-sm font-semibold tracking-wide uppercase">Engine Parameter Tuning</h2>
+        {/* ENGINE TUNING — spans full width */}
+        <section className={glassCard} style={{ padding: '24px', gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <h2 className={sectionTitle}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/></svg>
+            Engine Tuning
+          </h2>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '24px' }}>
+            {[
+              { id: 'parallelism', label: 'Index Parallelism', value: config.indexParallelism, min: 1, max: 8, onChange: handleIndexParallelismChange },
+              { id: 'threads', label: 'CPU Threads', value: config.threads, min: 1, max: 16, onChange: handleThreadsChange },
+              { id: 'batch', label: 'Batch Size', value: config.batchSize, min: 1, max: 50, onChange: handleBatchSizeChange },
+            ].map(s => (
+              <div key={s.id} className="control-row">
+                <label htmlFor={`${s.id}-slider`} className="control-label">
+                  {s.label}
+                  <span className="control-value">{s.value}</span>
+                </label>
+                <input id={`${s.id}-slider`} type="range" min={s.min} max={s.max} step={1} value={s.value} onChange={e => s.onChange(parseInt(e.target.value))} className="control-slider" />
+                <div className="control-range-labels"><span>{s.min}</span><span>{s.max}</span></div>
+              </div>
+            ))}
           </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 my-4">
-            
-            {/* Index Parallelism Slider */}
-            <div className="flex flex-col gap-2">
-              <div className="flex justify-between items-center">
-                <label className="text-xs text-zinc-400 font-semibold uppercase tracking-wider" htmlFor="parallelism-slider">Index Parallelism</label>
-                <span className="text-xs font-mono font-bold text-indigo-400 px-2 py-0.5 rounded bg-zinc-950/60 border border-white/5 backdrop-blur-sm">{config.indexParallelism}</span>
-              </div>
-              <input
-                id="parallelism-slider"
-                type="range"
-                min="1"
-                max="8"
-                step="1"
-                value={config.indexParallelism}
-                onChange={(e) => handleIndexParallelismChange(parseInt(e.target.value))}
-                className="w-full accent-indigo-500 bg-zinc-950/60 border border-white/[0.03] backdrop-blur-sm h-2 rounded-lg appearance-none cursor-pointer hover:border-white/[0.08] transition-all"
-              />
-              <div className="flex justify-between text-[10px] text-zinc-550 px-0.5 font-mono">
-                <span>1</span>
-                <span>8</span>
-              </div>
-            </div>
-
-            {/* CPU Threads Slider */}
-            <div className="flex flex-col gap-2">
-              <div className="flex justify-between items-center">
-                <label className="text-xs text-zinc-400 font-semibold uppercase tracking-wider" htmlFor="threads-slider">CPU Threads</label>
-                <span className="text-xs font-mono font-bold text-indigo-400 px-2 py-0.5 rounded bg-zinc-950/60 border border-white/5 backdrop-blur-sm">{config.threads}</span>
-              </div>
-              <input
-                id="threads-slider"
-                type="range"
-                min="1"
-                max="16"
-                step="1"
-                value={config.threads}
-                onChange={(e) => handleThreadsChange(parseInt(e.target.value))}
-                className="w-full accent-indigo-500 bg-zinc-950/60 border border-white/[0.03] backdrop-blur-sm h-2 rounded-lg appearance-none cursor-pointer hover:border-white/[0.08] transition-all"
-              />
-              <div className="flex justify-between text-[10px] text-zinc-550 px-0.5 font-mono">
-                <span>1</span>
-                <span>16</span>
-              </div>
-            </div>
-
-            {/* Embedding Batch Size Slider */}
-            <div className="flex flex-col gap-2">
-              <div className="flex justify-between items-center">
-                <label className="text-xs text-zinc-400 font-semibold uppercase tracking-wider" htmlFor="batch-slider">Embedding Batch Size</label>
-                <span className="text-xs font-mono font-bold text-indigo-400 px-2 py-0.5 rounded bg-zinc-950/60 border border-white/5 backdrop-blur-sm">{config.batchSize}</span>
-              </div>
-              <input
-                id="batch-slider"
-                type="range"
-                min="1"
-                max="50"
-                step="1"
-                value={config.batchSize}
-                onChange={(e) => handleBatchSizeChange(parseInt(e.target.value))}
-                className="w-full accent-indigo-500 bg-zinc-950/60 border border-white/[0.03] backdrop-blur-sm h-2 rounded-lg appearance-none cursor-pointer hover:border-white/[0.08] transition-all"
-              />
-              <div className="flex justify-between text-[10px] text-zinc-550 px-0.5 font-mono">
-                <span>1</span>
-                <span>50</span>
-              </div>
-            </div>
-
-          </div>
-
-          <div className="text-[10px] text-zinc-500 italic text-center font-sans">
-            Parameter changes are debounced and applied live to the MPSC indexing consumer without restart.
-          </div>
+          <p className="control-hint">Changes are applied live — the engine picks up new values on its next batch.</p>
         </section>
-
       </div>
 
-      <footer className="text-center text-[10px] font-sans text-zinc-650 tracking-widest mt-4 uppercase">
-        CRUMBS BACKGROUND PROCESSOR • VERSION 0.1.0
+      <footer style={{ textAlign: 'center', fontSize: '10px', color: 'var(--c-score-text)', letterSpacing: '0.1em', textTransform: 'uppercase', marginTop: '8px', position: 'relative', zIndex: 1 }}>
+        CRUMBS ENGINE • v0.1.0
       </footer>
     </div>
   );

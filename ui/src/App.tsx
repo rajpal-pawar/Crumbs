@@ -6,6 +6,7 @@ import Onboarding from './Onboarding';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import Dashboard from './components/Dashboard';
+import { ThemeToggle } from './ThemeContext';
 
 // ---------------------------------------------------------------------------
 // SVG icons (inline — no icon library dependency)
@@ -141,7 +142,11 @@ export default function App() {
   const [query, setQuery]   = useState('');
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const [indexedCount, setIndexedCount]   = useState(0);
+  const [processedCount, setProcessedCount] = useState(0);
+  const [errorsCount, setErrorsCount]       = useState(0);
+  const [skippedCount, setSkippedCount]     = useState(0);
   const [totalCount, setTotalCount]       = useState(0);
+  const [engineStatus, setEngineStatus]   = useState('idle');
   const inputRef            = useRef<HTMLInputElement>(null);
   const searchState         = useSearch(query);
   const [isOnboarded, setIsOnboarded] = useState<boolean | null>(null); // null = loading
@@ -191,11 +196,13 @@ export default function App() {
       listen<any>('crumbs://index-progress', (event) => {
         const payload = event.payload;
         if (!payload) return;
-        const { indexed, total } = payload;
-        if (indexed !== undefined && total !== undefined) {
-          setIndexedCount(indexed);
-          setTotalCount(total);
-        }
+        const { indexed, processed, errors, skipped, total, status } = payload;
+        if (indexed !== undefined) setIndexedCount(indexed);
+        if (processed !== undefined) setProcessedCount(processed);
+        if (errors !== undefined) setErrorsCount(errors || 0);
+        if (skipped !== undefined) setSkippedCount(skipped || 0);
+        if (total !== undefined) setTotalCount(total);
+        if (status !== undefined) setEngineStatus(status);
       }).then(un => {
         unlistenProgress = un;
       });
@@ -326,6 +333,8 @@ export default function App() {
           <span className="spinner" role="status" aria-label="Searching…" />
         )}
 
+        <ThemeToggle />
+
         <button
           id="settings-gear"
           className="gear-button"
@@ -383,16 +392,22 @@ export default function App() {
           {/* Footer */}
           <div className="results-footer">
             <span className="daemon-status">
-              {indexedCount < totalCount ? (
-                <>
-                  <span className="spinner" aria-hidden="true" style={{ width: '12px', height: '12px', display: 'inline-block', marginRight: '6px', verticalAlign: 'middle' }} />
-                  Indexing: {indexedCount} / {totalCount} files...
-                </>
-              ) : totalCount > 0 ? (
-                `System Ready • ${totalCount} files indexed.`
-              ) : (
-                'System Ready'
-              )}
+              {(() => {
+                const effectiveProcessed = Math.max(processedCount, indexedCount + errorsCount + skippedCount);
+                const isIndexing = engineStatus === 'indexing' && effectiveProcessed < totalCount && totalCount > 0;
+                if (isIndexing) {
+                  return (
+                    <>
+                      <span className="spinner" aria-hidden="true" style={{ width: '12px', height: '12px', display: 'inline-block', marginRight: '6px', verticalAlign: 'middle' }} />
+                      Indexing: {effectiveProcessed} / {totalCount} files...
+                    </>
+                  );
+                } else if (totalCount > 0) {
+                  return `System Ready • ${indexedCount} files indexed.`;
+                } else {
+                  return 'System Ready';
+                }
+              })()}
             </span>
             <span>
               <kbd className="kbd">↑↓</kbd> navigate &nbsp;

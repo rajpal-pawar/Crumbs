@@ -414,7 +414,19 @@ fn run_reindex_pipeline_internal_impl(
             let dirs_json: Vec<serde_json::Value> = dir_snapshot.iter().map(|d| {
                 json!({"path": d.path, "state": d.state})
             }).collect();
-            println!("{}", serde_json::json!({"status": "indexing", "indexed": stats.indexed, "total": s, "directories": dirs_json}));
+            let processed = stats.indexed + stats.skipped + stats.errors;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "indexing",
+                    "indexed": stats.indexed,
+                    "processed": processed,
+                    "errors": stats.errors,
+                    "skipped": stats.skipped,
+                    "total": s,
+                    "directories": dirs_json
+                })
+            );
 
             if let (Some(w), Some(h)) = (writer_opt, rt) {
                 let w = w.clone();
@@ -442,7 +454,11 @@ fn run_reindex_pipeline_internal_impl(
             }
             let meta = match std::fs::metadata(&path) {
                 Ok(m) => m,
-                Err(_) => { stats.skipped += 1; continue; }
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "Failed to read metadata — skipping");
+                    stats.skipped += 1;
+                    continue;
+                }
             };
 
             let is_semantic = {
@@ -451,14 +467,23 @@ fn run_reindex_pipeline_internal_impl(
             };
 
             if is_semantic && meta.len() > config_clone.max_file_bytes {
+                tracing::warn!(path = %path.display(), size = meta.len(), limit = config_clone.max_file_bytes, "File size exceeds limit — skipping");
                 stats.skipped += 1;
                 continue;
             }
 
             let extracted = match extractor::extract(&path, &config_clone) {
                 Ok(Some(e)) => e,
-                Ok(None) => { stats.skipped += 1; continue; }
-                Err(_) => { stats.errors += 1; continue; }
+                Ok(None) => {
+                    tracing::info!(path = %path.display(), "File skipped by extractor");
+                    stats.skipped += 1;
+                    continue;
+                }
+                Err(e) => {
+                    tracing::error!(path = %path.display(), error = ?e, "Extraction failed — skipping");
+                    stats.errors += 1;
+                    continue;
+                }
             };
 
             let title = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -537,7 +562,19 @@ fn run_reindex_pipeline_internal_impl(
     let final_dirs: Vec<serde_json::Value> = dir_registry.snapshot().iter().map(|d| {
         json!({"path": d.path, "state": d.state})
     }).collect();
-    println!("{}", serde_json::json!({"status": "completed", "indexed": stats.indexed, "total": stats.scanned, "directories": final_dirs}));
+    let processed = stats.indexed + stats.skipped + stats.errors;
+    println!(
+        "{}",
+        serde_json::json!({
+            "status": "completed",
+            "indexed": stats.indexed,
+            "processed": processed,
+            "errors": stats.errors,
+            "skipped": stats.skipped,
+            "total": stats.scanned,
+            "directories": final_dirs
+        })
+    );
 
     Ok(stats)
 }
