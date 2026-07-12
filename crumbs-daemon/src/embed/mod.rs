@@ -120,7 +120,8 @@ pub fn embed_text_batch(
                 "token_type_ids" => ort::value::Tensor::from_array(type_ids).map_err(|e| EmbedError::Ort(e.to_string()))?,
             ];
 
-            let outputs = model.session.run(inputs).map_err(|e| EmbedError::Ort(e.to_string()))?;
+            let mut session_guard = model.session.lock().map_err(|e| EmbedError::Ort(format!("Mutex lock error: {}", e)))?;
+            let outputs = session_guard.run(inputs).map_err(|e| EmbedError::Ort(e.to_string()))?;
 
             let hidden = outputs["last_hidden_state"]
                 .try_extract_array::<f32>()
@@ -177,7 +178,8 @@ pub fn embed_image_batch(
             "pixel_values" => ort::value::Tensor::from_array(pixel_values).map_err(|e| EmbedError::Ort(e.to_string()))?,
         ];
 
-        let outputs = session.run(inputs).map_err(|e| EmbedError::Ort(e.to_string()))?;
+        let mut session_guard = session.lock().map_err(|e| EmbedError::Ort(format!("Mutex lock error: {}", e)))?;
+        let outputs = session_guard.run(inputs).map_err(|e| EmbedError::Ort(e.to_string()))?;
 
         let embeds = outputs["image_embeds"]
             .try_extract_array::<f32>()
@@ -214,7 +216,8 @@ pub fn embed_clip_text(query: &str, config: &Config) -> Result<Vec<f32>, EmbedEr
         "input_ids" => ort::value::Tensor::from_array(ids).map_err(|e| EmbedError::Ort(e.to_string()))?,
     ];
 
-    let outputs = model.session.run(inputs).map_err(|e| EmbedError::Ort(e.to_string()))?;
+    let mut session_guard = model.session.lock().map_err(|e| EmbedError::Ort(format!("Mutex lock error: {}", e)))?;
+    let outputs = session_guard.run(inputs).map_err(|e| EmbedError::Ort(e.to_string()))?;
 
     let embeds = outputs["text_embeds"]
         .try_extract_array::<f32>()

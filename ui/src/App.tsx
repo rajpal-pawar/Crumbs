@@ -1,10 +1,11 @@
-import { useState, useEffect, useRef, useCallback, KeyboardEvent } from 'react';
+import { useState, useEffect, useRef, useCallback, type KeyboardEvent } from 'react';
 import './index.css';
 import { useSearch } from './useSearch';
 import { classifyHit, badgeClass, type SearchHit } from './types';
-import SettingsDashboard from './SettingsDashboard';
 import Onboarding from './Onboarding';
 import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import Dashboard from './components/Dashboard';
 
 // ---------------------------------------------------------------------------
 // SVG icons (inline — no icon library dependency)
@@ -132,13 +133,17 @@ function HitRow({ hit, index, selected }: { hit: SearchHit; index: number; selec
 // ---------------------------------------------------------------------------
 
 export default function App() {
+  const windowLabel = getCurrentWindow().label;
+  if (windowLabel === 'settings') {
+    return <Dashboard />;
+  }
+
   const [query, setQuery]   = useState('');
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const [indexedCount, setIndexedCount]   = useState(0);
   const [totalCount, setTotalCount]       = useState(0);
   const inputRef            = useRef<HTMLInputElement>(null);
   const searchState         = useSearch(query);
-  const [dashboardOpen, setDashboardOpen] = useState(false);
   const [isOnboarded, setIsOnboarded] = useState<boolean | null>(null); // null = loading
   const [onboardingChecked, setOnboardingChecked] = useState(false);
 
@@ -175,7 +180,6 @@ export default function App() {
     searchState.status === 'error';
 
   const hits = searchState.status === 'results' ? searchState.hits : [];
-  const total = searchState.status === 'results' ? searchState.total : 0;
 
   useEffect(() => {
     setSelectedIndex(-1);
@@ -325,7 +329,13 @@ export default function App() {
         <button
           id="settings-gear"
           className="gear-button"
-          onClick={() => setDashboardOpen(true)}
+          onClick={() => {
+            import('@tauri-apps/api/webviewWindow').then(({ WebviewWindow }) => {
+              const settingsWindow = new WebviewWindow('settings');
+              settingsWindow.show().catch(console.error);
+              settingsWindow.setFocus().catch(console.error);
+            });
+          }}
           aria-label="Open settings dashboard"
           title="Engine Settings"
         >
@@ -393,8 +403,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Settings Dashboard */}
-      <SettingsDashboard open={dashboardOpen} onClose={() => setDashboardOpen(false)} />
     </div>
   );
 }

@@ -148,6 +148,7 @@ pub fn open_file(path: String) -> Result<(), String> {
 pub async fn update_engine_config(
     batch_size: Option<u32>,
     threads: Option<u32>,
+    paused: Option<bool>,
     handle: State<'_, Arc<DaemonHandle>>,
 ) -> Result<Value, String> {
     let mut params = serde_json::Map::new();
@@ -156,6 +157,9 @@ pub async fn update_engine_config(
     }
     if let Some(t) = threads {
         params.insert("threads".into(), json!(t));
+    }
+    if let Some(p) = paused {
+        params.insert("paused".into(), json!(p));
     }
 
     let response = daemon::send_request(

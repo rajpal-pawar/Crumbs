@@ -1,6 +1,6 @@
 // useSearch.ts — Debounced Tauri IPC search hook.
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { SearchHit, SearchResponse } from './types';
 
@@ -9,8 +9,6 @@ export type SearchState =
   | { status: 'loading' }
   | { status: 'results'; hits: SearchHit[]; total: number }
   | { status: 'error'; message: string };
-
-const DEBOUNCE_MS = 500; // wait 500 ms after last keystroke before querying
 
 /**
  * Sends a search query to the Crumbs daemon via Tauri IPC and returns

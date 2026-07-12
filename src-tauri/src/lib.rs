@@ -12,7 +12,10 @@
 mod commands;
 mod daemon;
 
+use std::sync::Arc;
 use tauri::Manager;
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::tray::TrayIconBuilder;
 use tracing::info;
 use tracing_subscriber::{fmt, EnvFilter};
 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
@@ -70,6 +73,55 @@ pub fn run() {
         // -------------------------------------------------------------------
         .setup(|app| {
             info!("Tauri app reached the setup phase!");
+            
+            // 1. Create menu items for the system tray
+            let open_search = MenuItemBuilder::with_id("open_search", "Open Search").build(app)?;
+            let settings_dashboard = MenuItemBuilder::with_id("settings_dashboard", "Settings Dashboard").build(app)?;
+            let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+            
+            // 2. Build the menu
+            let menu = MenuBuilder::new(app)
+                .items(&[&open_search, &settings_dashboard, &quit])
+                .build()?;
+
+            // 3. Build the tray with the event handler
+            let mut tray_builder = TrayIconBuilder::new()
+                .menu(&menu)
+                .on_menu_event(|app, event| {
+                    match event.id().as_ref() {
+                        "open_search" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                window.show().unwrap();
+                                window.set_focus().unwrap();
+                            }
+                        }
+                        "settings_dashboard" => {
+                            if let Some(window) = app.get_webview_window("settings") {
+                                window.show().unwrap();
+                                window.set_focus().unwrap();
+                            }
+                        }
+                        "quit" => {
+                            info!("Quit requested via tray menu. Cleaning up daemon...");
+                            if let Some(daemon_handle) = app.try_state::<Arc<crate::daemon::DaemonHandle>>() {
+                                if let Ok(mut child_lock) = daemon_handle.child.try_lock() {
+                                    if let Some(child) = child_lock.take() {
+                                        let _ = child.kill();
+                                    }
+                                }
+                            }
+                            app.exit(0);
+                        }
+                        _ => {}
+                    }
+                });
+
+            if let Some(icon) = app.default_window_icon() {
+                tray_builder = tray_builder.icon(icon.clone());
+            }
+
+            let _tray = tray_builder.build(app)?;
+
             let handle = app.handle().clone();
             // `daemon::launch` is async, so we spawn a Tokio task.
             // The Tauri runtime provides a Tokio executor when using
@@ -80,6 +132,15 @@ pub fn run() {
                 }
             });
             Ok(())
+        })
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::CloseRequested { api, .. } => {
+                if window.label() == "settings" {
+                    api.prevent_close();
+                    window.hide().unwrap();
+                }
+            }
+            _ => {}
         })
         // -------------------------------------------------------------------
         // Register all front-end–callable commands.

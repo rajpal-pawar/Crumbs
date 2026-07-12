@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/acl/2",
   "identifier": "default",
-  "description": "Default capability set for the Crumbs main window",
-  "windows": ["main"],
+  "description": "Default capability set for the Crumbs windows",
+  "windows": ["main", "settings"],
   "permissions": [
     "core:default",
     "shell:allow-spawn",
@@ -10,6 +10,14 @@
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",
     "global-shortcut:allow-is-registered",
-    "dialog:default"
+    "dialog:default",
+    "core:window:default",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "core:webview:allow-create-webview-window",
+    "core:webview:allow-get-all-webviews"
   ]
 }

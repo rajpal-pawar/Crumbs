@@ -32,7 +32,7 @@ use std::path::Path;
 
 use image::DynamicImage;
 use sha2::{Digest, Sha256};
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::config::Config;
 

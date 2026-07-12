@@ -69,9 +69,13 @@ pub fn handle_update_config(
     if let Some(t) = req.params.get("threads").and_then(|v| v.as_i64()) {
         atomic_config.set_threads(t as i16);
     }
+    if let Some(p) = req.params.get("paused").and_then(|v| v.as_bool()) {
+        crate::state::get_model_manager().set_engine_paused(p);
+    }
     info!(
         batch_size = atomic_config.batch_size(),
         threads = atomic_config.threads(),
+        paused = crate::state::get_model_manager().is_engine_paused(),
         "engine config updated"
     );
     Response::success(
@@ -79,6 +83,7 @@ pub fn handle_update_config(
         json!({
             "batch_size": atomic_config.batch_size(),
             "threads": atomic_config.threads(),
+            "paused": crate::state::get_model_manager().is_engine_paused(),
         }),
     )
 }
@@ -227,6 +232,9 @@ pub async fn handle_status(
     let minilm_ready = config.model_cache_dir().join("minilm-l6-int8.onnx").exists();
     let clip_ready   = config.model_cache_dir().join("clip-vit-b32-int8.onnx").exists();
 
+    let db_size = std::fs::metadata(config.db_path()).map(|m| m.len()).unwrap_or(0);
+    let onnx_memory = crate::state::get_model_manager().get_onnx_memory_footprint();
+
     Response::success(
         req.id,
         json!({
@@ -234,6 +242,9 @@ pub async fn handle_status(
             "status":           "idle",
             "data_dir":         config.data_dir.display().to_string(),
             "db_path":          config.db_path().display().to_string(),
+            "db_size":          db_size,
+            "onnx_memory":      onnx_memory,
+            "paused":           crate::state::get_model_manager().is_engine_paused(),
             "max_file_bytes":   config.max_file_bytes,
             "embed_batch_size": config.embed_batch_size,
             "onnx_threads":     config.onnx_intra_threads,
@@ -349,6 +360,9 @@ fn run_reindex_pipeline_internal_impl(
                 });
 
             for entry_res in walker {
+                while crate::state::get_model_manager().is_engine_paused() {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
                 let entry = match entry_res {
                     Ok(e) => e,
                     Err(_) => continue, // Explicitly ignore PermissionDenied or unreadable folders
@@ -419,6 +433,9 @@ fn run_reindex_pipeline_internal_impl(
         };
 
         while let Ok(path) = path_rx.recv() {
+            while crate::state::get_model_manager().is_engine_paused() {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
             if crate::state::get_model_manager().has_pending_searches() {
                 debug!("Search request pending. Indexer yielding/pausing to prioritize UI response time.");
                 std::thread::sleep(std::time::Duration::from_millis(100));
@@ -911,7 +928,7 @@ fn hit_to_json(h: SearchHit) -> serde_json::Value {
 
 pub fn start_background_watcher(
     config: Arc<Config>,
-    db: Arc<Database>,
+    _db: Arc<Database>,
     rx: std::sync::mpsc::Receiver<notify::Event>,
     watcher: notify::RecommendedWatcher,
 ) {
@@ -1070,7 +1087,7 @@ fn index_single_file(
     config: &Config,
 ) -> Result<(), String> {
     use crate::index::writer::{DocumentRecord, EmbeddingRecord};
-    use crate::extractor::{self, Extracted};
+    use crate::extractor;
     use crate::embed;
 
     let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;

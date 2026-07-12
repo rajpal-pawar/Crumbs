@@ -1,4 +1,4 @@
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Mutex};
 use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
 use ort::session::Session;
 use tokenizers::Tokenizer;
@@ -6,22 +6,23 @@ use crate::config::Config;
 use crate::embed::EmbedError;
 
 pub struct MiniLMModel {
-    pub session: Session,
+    pub session: Mutex<Session>,
     pub tokenizer: Tokenizer,
 }
 
 pub struct CLIPTextModel {
-    pub session: Session,
+    pub session: Mutex<Session>,
     pub tokenizer: Tokenizer,
 }
 
 pub struct ModelManager {
     minilm: RwLock<Option<Arc<MiniLMModel>>>,
-    clip_vision: RwLock<Option<Arc<Session>>>,
+    clip_vision: RwLock<Option<Arc<Mutex<Session>>>>,
     clip_text: RwLock<Option<Arc<CLIPTextModel>>>,
     
     active_search_count: AtomicUsize,
     is_indexer_active: AtomicBool,
+    is_paused: AtomicBool,
 }
 
 pub static MODEL_MANAGER: std::sync::OnceLock<ModelManager> = std::sync::OnceLock::new();
@@ -38,14 +39,43 @@ impl ModelManager {
             clip_text: RwLock::new(None),
             active_search_count: AtomicUsize::new(0),
             is_indexer_active: AtomicBool::new(false),
+            is_paused: AtomicBool::new(false),
         }
     }
 
-    pub fn set_indexer_active(&self, active: bool, config: &Config) {
+    pub fn set_indexer_active(&self, active: bool, _config: &Config) {
         self.is_indexer_active.store(active, Ordering::SeqCst);
         if !active {
             self.maybe_cleanup();
         }
+    }
+
+    pub fn is_engine_paused(&self) -> bool {
+        self.is_paused.load(Ordering::SeqCst)
+    }
+
+    pub fn set_engine_paused(&self, paused: bool) {
+        self.is_paused.store(paused, Ordering::SeqCst);
+    }
+
+    pub fn get_onnx_memory_footprint(&self) -> u64 {
+        let mut onnx_memory = 0;
+        if let Ok(lock) = self.minilm.read() {
+            if lock.is_some() {
+                onnx_memory += 90 * 1024 * 1024;
+            }
+        }
+        if let Ok(lock) = self.clip_vision.read() {
+            if lock.is_some() {
+                onnx_memory += 350 * 1024 * 1024;
+            }
+        }
+        if let Ok(lock) = self.clip_text.read() {
+            if lock.is_some() {
+                onnx_memory += 350 * 1024 * 1024;
+            }
+        }
+        onnx_memory
     }
 
     pub fn increment_search(&self) {
@@ -123,12 +153,12 @@ impl ModelManager {
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| EmbedError::Tokenizer(e.to_string()))?;
 
-        let model = Arc::new(MiniLMModel { session, tokenizer });
+        let model = Arc::new(MiniLMModel { session: Mutex::new(session), tokenizer });
         *lock = Some(Arc::clone(&model));
         Ok(model)
     }
 
-    pub fn get_clip_vision(&self, config: &Config) -> Result<Arc<Session>, EmbedError> {
+    pub fn get_clip_vision(&self, config: &Config) -> Result<Arc<Mutex<Session>>, EmbedError> {
         {
             let lock = self.clip_vision.read().map_err(|e| EmbedError::Ort(format!("RwLock read error: {}", e)))?;
             if let Some(ref model) = *lock {
@@ -155,7 +185,7 @@ impl ModelManager {
             .commit_from_file(&model_path)
             .map_err(|e| EmbedError::Ort(e.to_string()))?;
 
-        let model = Arc::new(session);
+        let model = Arc::new(Mutex::new(session));
         *lock = Some(Arc::clone(&model));
         Ok(model)
     }
@@ -196,8 +226,9 @@ impl ModelManager {
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| EmbedError::Tokenizer(e.to_string()))?;
 
-        let model = Arc::new(CLIPTextModel { session, tokenizer });
+        let model = Arc::new(CLIPTextModel { session: Mutex::new(session), tokenizer });
         *lock = Some(Arc::clone(&model));
         Ok(model)
     }
 }
+

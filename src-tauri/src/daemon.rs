@@ -73,9 +73,9 @@ type PendingMap = Arc<Mutex<HashMap<String, oneshot::Sender<Response>>>>;
 /// Stored in Tauri's managed state so commands can call `send_request`.
 pub struct DaemonHandle {
     /// The daemon child process (guarded by mutex for shared access to its write method).
-    child: Mutex<tauri_plugin_shell::process::CommandChild>,
+    pub child: Mutex<Option<tauri_plugin_shell::process::CommandChild>>,
     /// In-flight requests waiting for a response from the daemon.
-    pending: PendingMap,
+    pub pending: PendingMap,
 }
 
 // ---------------------------------------------------------------------------
@@ -188,7 +188,7 @@ pub async fn launch(app: AppHandle) -> Result<(), DaemonError> {
     // -----------------------------------------------------------------------
     // We wrap the CommandChild in a Mutex so multiple command invocations can share it.
     app.manage(Arc::new(DaemonHandle {
-        child: Mutex::new(child),
+        child: Mutex::new(Some(child)),
         pending,
     }));
 
@@ -229,12 +229,13 @@ pub async fn send_request(
 
     // Write the request to the daemon's stdin.
     {
-        handle
-            .child
-            .lock()
-            .await
-            .write(line.as_bytes())
-            .map_err(|e| DaemonError::Send(e.to_string()))?;
+        let mut child_lock = handle.child.lock().await;
+        if let Some(ref mut child) = *child_lock {
+            child.write(line.as_bytes())
+                .map_err(|e| DaemonError::Send(e.to_string()))?;
+        } else {
+            return Err(DaemonError::Send("Daemon process is not running".to_string()));
+        }
     }
 
     debug!(id = %id, method = %method, "request sent to daemon");
