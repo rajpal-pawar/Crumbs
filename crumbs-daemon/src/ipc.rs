@@ -199,6 +199,9 @@ async fn dispatch(req: Request, config: Arc<Config>, db: Arc<Database>, writer: 
         "get_config" => {
             handlers::handle_get_config(req, &config, &atomic_config)
         }
+        "list_documents" => {
+            handlers::handle_list_documents(req, &db).await
+        }
         unknown => {
             warn!(method = %unknown, "unknown IPC method");
             Response::failure(&id, format!("unknown method: {unknown}"))

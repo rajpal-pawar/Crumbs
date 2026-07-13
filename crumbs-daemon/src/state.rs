@@ -63,6 +63,10 @@ impl ModelManager {
         self.is_paused.store(paused, Ordering::SeqCst);
     }
 
+    pub fn is_indexer_active(&self) -> bool {
+        self.is_indexer_active.load(Ordering::SeqCst)
+    }
+
     pub fn set_indexing_issues(&self, failed: Vec<(String, String)>, skipped: Vec<(String, String)>) {
         if let Ok(mut lock) = self.last_failed_files.write() {
             *lock = failed;

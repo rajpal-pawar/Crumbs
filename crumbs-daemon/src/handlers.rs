@@ -236,6 +236,8 @@ pub async fn handle_status(
     let onnx_memory = crate::state::get_model_manager().get_onnx_memory_footprint();
 
     let (failed_files, skipped_files) = crate::state::get_model_manager().get_indexing_issues();
+    tracing::info!("handle_status: sending {} failed_files and {} skipped_files", failed_files.len(), skipped_files.len());
+
     let failed_json: Vec<serde_json::Value> = failed_files.iter().take(50).map(|(p, r)| {
         json!({"path": p, "reason": r})
     }).collect();
@@ -243,11 +245,17 @@ pub async fn handle_status(
         json!({"path": p, "reason": r})
     }).collect();
 
+    let status_str = if crate::state::get_model_manager().is_indexer_active() {
+        "indexing"
+    } else {
+        "idle"
+    };
+
     Response::success(
         req.id,
         json!({
             "version":          env!("CARGO_PKG_VERSION"),
-            "status":           "idle",
+            "status":           status_str,
             "data_dir":         config.data_dir.display().to_string(),
             "db_path":          config.db_path().display().to_string(),
             "db_size":          db_size,
@@ -533,14 +541,22 @@ fn run_reindex_pipeline_internal_impl(
 
             let mut flushed = false;
             if text_batch.len() >= batch_size {
-                if flush_text_batch(&mut text_batch, &config_clone, &db_clone, &mut stats).is_err() {
+                if let Err(e) = flush_text_batch(&mut text_batch, &config_clone, &db_clone, &mut stats) {
+                    let err_msg = format!("{}", e);
+                    for item in &text_batch {
+                        stats.failed_files.push((item.path.display().to_string(), err_msg.clone()));
+                    }
                     stats.errors += text_batch.len() as u64;
                     text_batch.clear();
                 }
                 flushed = true;
             }
             if image_batch.len() >= batch_size {
-                if flush_image_batch(&mut image_batch, &config_clone, &db_clone, &mut stats).is_err() {
+                if let Err(e) = flush_image_batch(&mut image_batch, &config_clone, &db_clone, &mut stats) {
+                    let err_msg = format!("{}", e);
+                    for item in &image_batch {
+                        stats.failed_files.push((item.path.display().to_string(), err_msg.clone()));
+                    }
                     stats.errors += image_batch.len() as u64;
                     image_batch.clear();
                 }
@@ -558,11 +574,25 @@ fn run_reindex_pipeline_internal_impl(
 
         let mut final_flushed = false;
         if !text_batch.is_empty() {
-            let _ = flush_text_batch(&mut text_batch, &config_clone, &db_clone, &mut stats);
+            if let Err(e) = flush_text_batch(&mut text_batch, &config_clone, &db_clone, &mut stats) {
+                let err_msg = format!("{}", e);
+                for item in &text_batch {
+                    stats.failed_files.push((item.path.display().to_string(), err_msg.clone()));
+                }
+                stats.errors += text_batch.len() as u64;
+                text_batch.clear();
+            }
             final_flushed = true;
         }
         if !image_batch.is_empty() {
-            let _ = flush_image_batch(&mut image_batch, &config_clone, &db_clone, &mut stats);
+            if let Err(e) = flush_image_batch(&mut image_batch, &config_clone, &db_clone, &mut stats) {
+                let err_msg = format!("{}", e);
+                for item in &image_batch {
+                    stats.failed_files.push((item.path.display().to_string(), err_msg.clone()));
+                }
+                stats.errors += image_batch.len() as u64;
+                image_batch.clear();
+            }
             final_flushed = true;
         }
         
@@ -778,6 +808,59 @@ pub fn handle_get_config(
             "data_dir": config.data_dir.display().to_string(),
         }),
     )
+}
+
+// ---------------------------------------------------------------------------
+// list_documents — return indexed files from the database
+// ---------------------------------------------------------------------------
+
+/// Handle a `list_documents` request.
+///
+/// Returns a list of all indexed documents with their path, title, mime_type,
+/// and size_bytes.  Limited to 500 results to avoid large payloads.
+pub async fn handle_list_documents(
+    req: Request,
+    db: &Arc<Database>,
+) -> Response {
+    debug!(id = %req.id, "handling list_documents request");
+
+    let db = Arc::clone(db);
+
+    let result = tokio::task::spawn_blocking(move || {
+        db.with_read_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT path, replace(path, rtrim(path, replace(path, '/', '')), '') AS title, mime_type, size_bytes FROM documents ORDER BY path ASC LIMIT 500"
+            ).map_err(crate::index::DbError::Rusqlite)?;
+
+            let docs: Vec<serde_json::Value> = stmt.query_map([], |row| {
+                let path: String = row.get(0)?;
+                let title: String = row.get(1)?;
+                let mime: String = row.get(2)?;
+                let size: i64 = row.get(3)?;
+                Ok(json!({
+                    "path": path,
+                    "title": title,
+                    "mime_type": mime,
+                    "size_bytes": size,
+                }))
+            })
+            .map_err(crate::index::DbError::Rusqlite)?
+            .filter_map(|r| r.ok())
+            .collect();
+
+            Ok(docs)
+        })
+    })
+    .await;
+
+    match result {
+        Ok(Ok(docs)) => {
+            let total = docs.len();
+            Response::success(req.id, json!({ "documents": docs, "total": total }))
+        }
+        Ok(Err(e)) => Response::failure(req.id, format!("list_documents error: {e}")),
+        Err(e) => Response::failure(req.id, format!("spawn_blocking panicked: {e}")),
+    }
 }
 
 // ---------------------------------------------------------------------------

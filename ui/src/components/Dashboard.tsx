@@ -25,8 +25,16 @@ interface FileIssue {
   reason: string;
 }
 
+interface IndexedFile {
+  path: string;
+  title: string;
+  mime_type: string;
+  size_bytes: number;
+}
+
 interface DaemonStatusResponse {
   paused: boolean;
+  status: string;
   db_size: number;
   onnx_memory: number;
   doc_count: number;
@@ -68,6 +76,7 @@ export default function Dashboard() {
   const [skipped, setSkipped] = useState(0);
   const [total, setTotal] = useState(0);
   const [status, setStatus] = useState('idle');
+  const statusRef = useRef('idle');
   const [paused, setPaused] = useState(false);
   const [docCount, setDocCount] = useState(0);
   
@@ -79,7 +88,9 @@ export default function Dashboard() {
   const [folderUpdating, setFolderUpdating] = useState(false);
   const [failedFiles, setFailedFiles] = useState<FileIssue[]>([]);
   const [skippedFiles, setSkippedFiles] = useState<FileIssue[]>([]);
-  const [showIssues, setShowIssues] = useState(false);
+  const [fileInspectorTab, setFileInspectorTab] = useState<'indexed' | 'failed' | 'skipped' | null>(null);
+  const [indexedFiles, setIndexedFiles] = useState<IndexedFile[]>([]);
+  const [indexedFilesLoading, setIndexedFilesLoading] = useState(false);
 
   // 1. Fetch daemon status, metrics, and folders on mount and poll every 2.5 seconds
   const fetchStatus = useCallback(async () => {
@@ -87,6 +98,10 @@ export default function Dashboard() {
       const res = await invoke<DaemonStatusResponse>('status');
       if (res) {
         setPaused(!!res.paused);
+        if (res.status) {
+          setStatus(res.status);
+          statusRef.current = res.status;
+        }
         setDbSize(res.db_size || 0);
         setOnnxMemory(res.onnx_memory || 0);
         setDocCount(res.doc_count || 0);
@@ -96,8 +111,8 @@ export default function Dashboard() {
           batchSize: res.embed_batch_size || prev.batchSize,
           threads: res.onnx_threads || prev.threads,
         }));
-        if (res.failed_files) setFailedFiles(res.failed_files);
-        if (res.skipped_files) setSkippedFiles(res.skipped_files);
+        if (res.failed_files && statusRef.current !== 'indexing') setFailedFiles(res.failed_files);
+        if (res.skipped_files && statusRef.current !== 'indexing') setSkippedFiles(res.skipped_files);
       }
     } catch (err) {
       console.error('[Dashboard] Failed to fetch daemon status:', err);
@@ -121,7 +136,10 @@ export default function Dashboard() {
       if (p.errors !== undefined) setErrors(p.errors || 0);
       if (p.skipped !== undefined) setSkipped(p.skipped || 0);
       if (p.total !== undefined) setTotal(p.total);
-      if (p.status) setStatus(p.status);
+      if (p.status) {
+        setStatus(p.status);
+        statusRef.current = p.status;
+      }
       if (p.directories && p.directories.length > 0) {
         setDirs(p.directories);
       }
@@ -240,20 +258,21 @@ export default function Dashboard() {
       flexDirection: 'column',
       gap: '20px',
       position: 'relative',
-      overflow: 'hidden',
+      overflowX: 'hidden',
+      overflowY: 'auto',
     }}>
       
       {/* Ambient glass blobs */}
       <div style={{
         position: 'absolute', top: '-10%', right: '-15%',
         width: '60vw', height: '60vw', borderRadius: '50%',
-        background: 'rgba(110,142,251,0.08)', filter: 'blur(130px)',
+        background: 'rgba(224,168,96,0.06)', filter: 'blur(130px)',
         pointerEvents: 'none', zIndex: 0,
       }} />
       <div style={{
         position: 'absolute', bottom: '-15%', left: '-15%',
         width: '60vw', height: '60vw', borderRadius: '50%',
-        background: 'rgba(167,139,250,0.06)', filter: 'blur(130px)',
+        background: 'rgba(212,136,106,0.04)', filter: 'blur(130px)',
         pointerEvents: 'none', zIndex: 0,
       }} />
 
@@ -264,7 +283,7 @@ export default function Dashboard() {
             <div style={{
               width: '10px', height: '10px', borderRadius: '50%',
               background: paused ? '#71717a' : isEngineActive ? 'var(--c-accent)' : '#52525b',
-              boxShadow: isEngineActive ? '0 0 14px rgba(110,142,251,0.7)' : 'none',
+              boxShadow: isEngineActive ? '0 0 14px rgba(224,168,96,0.7)' : 'none',
               animation: isEngineActive ? 'pulse 1.5s ease infinite' : 'none',
             }} />
             <h1 style={{ fontSize: '18px', fontWeight: 700, letterSpacing: '-0.02em' }}>Crumbs Engine</h1>
@@ -282,7 +301,7 @@ export default function Dashboard() {
             <button onClick={handleTogglePause} style={{
               padding: '8px 16px', borderRadius: '10px', fontWeight: 600, fontSize: '11px',
               border: '1px solid var(--c-border)', cursor: 'pointer',
-              background: paused ? 'var(--c-hit-bg)' : 'rgba(110,142,251,0.1)',
+              background: paused ? 'var(--c-hit-bg)' : 'rgba(224,168,96,0.1)',
               color: paused ? 'var(--c-text-muted)' : 'var(--c-accent)',
               textTransform: 'uppercase', letterSpacing: '0.06em',
               display: 'flex', alignItems: 'center', gap: '6px',
@@ -302,7 +321,44 @@ export default function Dashboard() {
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: 'var(--c-text-muted)', marginBottom: '6px' }}>
             <span>
               <span style={{ color: 'var(--c-text)', fontWeight: 600, fontFamily: 'monospace' }}>{effectiveProcessed.toLocaleString()}</span> / <span style={{ color: 'var(--c-text)', fontWeight: 600, fontFamily: 'monospace' }}>{total.toLocaleString()}</span> files
-              {effectiveProcessed > 0 && <span> ({indexed.toLocaleString()} indexed{errors > 0 ? `, ${errors} failed` : ''}{skipped > 0 ? `, ${skipped} skipped` : ''})</span>}
+              {effectiveProcessed > 0 && <span style={{ display: 'inline-flex', gap: '6px', marginLeft: '6px' }}>
+                (<button
+                  onClick={() => {
+                    if (fileInspectorTab === 'indexed') { setFileInspectorTab(null); return; }
+                    setFileInspectorTab('indexed');
+                    setIndexedFilesLoading(true);
+                    invoke<{ documents: IndexedFile[]; total: number }>('list_indexed_files')
+                      .then(res => setIndexedFiles(res.documents || []))
+                      .catch(err => console.error('[Dashboard] list_indexed_files failed:', err))
+                      .finally(() => setIndexedFilesLoading(false));
+                  }}
+                  style={{
+                    background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                    color: fileInspectorTab === 'indexed' ? 'var(--c-accent)' : '#4ade80',
+                    fontFamily: 'inherit', fontSize: 'inherit', textDecoration: 'underline',
+                    textDecorationStyle: 'dotted', textUnderlineOffset: '2px',
+                  }}
+                >{indexed.toLocaleString()} indexed</button>
+                {errors > 0 && <>, <button
+                  onClick={() => setFileInspectorTab(fileInspectorTab === 'failed' ? null : 'failed')}
+                  style={{
+                    background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                    color: fileInspectorTab === 'failed' ? 'var(--c-accent)' : '#f87171',
+                    fontFamily: 'inherit', fontSize: 'inherit', textDecoration: 'underline',
+                    textDecorationStyle: 'dotted', textUnderlineOffset: '2px',
+                  }}
+                >{errors.toLocaleString()} failed</button></>}
+                {skipped > 0 && <>, <button
+                  onClick={() => setFileInspectorTab(fileInspectorTab === 'skipped' ? null : 'skipped')}
+                  style={{
+                    background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                    color: fileInspectorTab === 'skipped' ? 'var(--c-accent)' : '#facc15',
+                    fontFamily: 'inherit', fontSize: 'inherit', textDecoration: 'underline',
+                    textDecorationStyle: 'dotted', textUnderlineOffset: '2px',
+                  }}
+                >{skipped.toLocaleString()} skipped</button></>}
+                )
+              </span>}
             </span>
             <span style={{ color: 'var(--c-accent)', fontWeight: 700, fontFamily: 'monospace' }}>{pct}%</span>
           </div>
@@ -310,6 +366,133 @@ export default function Dashboard() {
             <div className={`dashboard-progress__fill ${isEngineActive ? 'dashboard-progress__fill--active' : ''}`} style={{ width: `${pct}%` }} />
           </div>
         </div>
+        {/* File Inspector Panel */}
+        {fileInspectorTab && (
+          <div style={{
+            marginTop: '16px', padding: '16px', borderRadius: 'var(--radius-md)',
+            background: 'var(--c-hit-bg)', border: '1px solid var(--c-border)',
+            maxHeight: '280px', overflowY: 'auto',
+            animation: 'slide-in 150ms ease forwards',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+              <div style={{ display: 'flex', gap: '4px' }}>
+                {['indexed', 'failed', 'skipped'].map(tab => {
+                  const count = tab === 'indexed' ? indexed : tab === 'failed' ? errors : skipped;
+                  if (count === 0 && tab !== 'indexed') return null;
+                  return (
+                    <button
+                      key={tab}
+                      onClick={() => {
+                        if (tab === 'indexed' && fileInspectorTab !== 'indexed') {
+                          setIndexedFilesLoading(true);
+                          invoke<{ documents: IndexedFile[]; total: number }>('list_indexed_files')
+                            .then(res => setIndexedFiles(res.documents || []))
+                            .catch(err => console.error('[Dashboard] list_indexed_files failed:', err))
+                            .finally(() => setIndexedFilesLoading(false));
+                        }
+                        setFileInspectorTab(tab as any);
+                      }}
+                      style={{
+                        padding: '4px 10px', borderRadius: '6px', fontSize: '10px', fontWeight: 600,
+                        textTransform: 'uppercase', letterSpacing: '0.04em', cursor: 'pointer',
+                        border: '1px solid',
+                        borderColor: fileInspectorTab === tab ? 'var(--c-accent)' : 'var(--c-border)',
+                        background: fileInspectorTab === tab ? 'rgba(224,168,96,0.1)' : 'transparent',
+                        color: fileInspectorTab === tab ? 'var(--c-accent)'
+                          : tab === 'indexed' ? '#4ade80' : tab === 'failed' ? '#f87171' : '#facc15',
+                        transition: 'all 200ms ease',
+                      }}
+                    >
+                      {tab} ({count})
+                    </button>
+                  );
+                })}
+              </div>
+              <button
+                onClick={() => setFileInspectorTab(null)}
+                style={{
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  color: 'var(--c-text-muted)', padding: '2px',
+                }}
+                aria-label="Close file inspector"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Indexed tab */}
+            {fileInspectorTab === 'indexed' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                {indexedFilesLoading ? (
+                  <div style={{ textAlign: 'center', padding: '16px', color: 'var(--c-text-muted)', fontSize: '12px' }}>
+                    <span className="spinner" style={{ width: '12px', height: '12px', marginRight: '8px' }} />
+                    Loading indexed files…
+                  </div>
+                ) : indexedFiles.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '16px', color: 'var(--c-text-muted)', fontSize: '12px' }}>No indexed files found.</div>
+                ) : indexedFiles.map((f, i) => (
+                  <div key={i} style={{
+                    padding: '6px 10px', borderRadius: 'var(--radius-sm)',
+                    background: 'rgba(74,222,128,0.04)', border: '1px solid rgba(74,222,128,0.08)',
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px',
+                  }}>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ fontSize: '11px', color: 'var(--c-text)', fontFamily: 'monospace', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {f.title || f.path.split('/').pop()}
+                      </div>
+                      <div style={{ fontSize: '9px', color: 'var(--c-text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.path}</div>
+                    </div>
+                    <span style={{ fontSize: '9px', color: 'var(--c-text-muted)', flexShrink: 0 }}>{f.mime_type}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Failed tab */}
+            {fileInspectorTab === 'failed' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                {failedFiles.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '16px', color: 'var(--c-text-muted)', fontSize: '12px' }}>No failed files.</div>
+                ) : failedFiles.map((f, i) => (
+                  <div key={i} style={{
+                    padding: '6px 10px', borderRadius: 'var(--radius-sm)',
+                    background: 'rgba(248,113,113,0.04)', border: '1px solid rgba(248,113,113,0.08)',
+                    display: 'flex', flexDirection: 'column', gap: '2px',
+                  }}>
+                    <span style={{ fontSize: '11px', color: 'var(--c-text)', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                      {f.path.split('/').pop() || f.path}
+                    </span>
+                    <span style={{ fontSize: '10px', color: '#f87171' }}>{f.reason}</span>
+                    <span style={{ fontSize: '9px', color: 'var(--c-text-muted)', wordBreak: 'break-all' }}>{f.path}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Skipped tab */}
+            {fileInspectorTab === 'skipped' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                {skippedFiles.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '16px', color: 'var(--c-text-muted)', fontSize: '12px' }}>No skipped files.</div>
+                ) : skippedFiles.map((f, i) => (
+                  <div key={i} style={{
+                    padding: '6px 10px', borderRadius: 'var(--radius-sm)',
+                    background: 'rgba(250,204,21,0.04)', border: '1px solid rgba(250,204,21,0.06)',
+                    display: 'flex', flexDirection: 'column', gap: '2px',
+                  }}>
+                    <span style={{ fontSize: '11px', color: 'var(--c-text)', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                      {f.path.split('/').pop() || f.path}
+                    </span>
+                    <span style={{ fontSize: '10px', color: '#facc15' }}>{f.reason}</span>
+                    <span style={{ fontSize: '9px', color: 'var(--c-text-muted)', wordBreak: 'break-all' }}>{f.path}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </header>
 
       {/* BENTO GRID */}
@@ -365,12 +548,12 @@ export default function Dashboard() {
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               background: 'var(--c-hit-bg)', border: '1px solid var(--c-border)',
               backdropFilter: 'blur(8px)', zIndex: 2,
-              boxShadow: isEngineActive ? '0 0 20px rgba(110,142,251,0.2)' : 'none',
+              boxShadow: isEngineActive ? '0 0 20px rgba(224,168,96,0.2)' : 'none',
             }}>
               <div style={{
                 width: '14px', height: '14px', borderRadius: '50%',
                 background: paused ? '#71717a' : isEngineActive ? 'var(--c-accent)' : '#52525b',
-                boxShadow: isEngineActive ? '0 0 15px rgba(110,142,251,0.8)' : 'none',
+                boxShadow: isEngineActive ? '0 0 15px rgba(224,168,96,0.8)' : 'none',
                 animation: isEngineActive ? 'pulse 1.5s ease infinite' : 'none',
               }} />
             </div>
@@ -383,7 +566,7 @@ export default function Dashboard() {
                 <div key={i} style={{
                   position: 'absolute', transform: `translate(${x}px, ${y}px)`,
                   width: '22px', height: '22px', borderRadius: '50%',
-                  background: 'var(--c-hit-bg)', border: `1px solid ${isEngineActive ? 'rgba(110,142,251,0.5)' : 'var(--c-border)'}`,
+                  background: 'var(--c-hit-bg)', border: `1px solid ${isEngineActive ? 'rgba(224,168,96,0.5)' : 'var(--c-border)'}`,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: '9px', fontWeight: 600, color: isEngineActive ? 'var(--c-accent)' : 'var(--c-text-muted)',
                   backdropFilter: 'blur(4px)', transition: 'all 0.5s ease',
@@ -428,7 +611,7 @@ export default function Dashboard() {
         <section className={glassCard} style={{ padding: '24px', gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: '16px' }}>
           <h2 className={sectionTitle}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/></svg>
-            Engine Tuning
+            Engine Tuning (Failed: {failedFiles.length}, Skipped: {skippedFiles.length})
           </h2>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '24px' }}>
             {[
@@ -449,95 +632,7 @@ export default function Dashboard() {
           <p className="control-hint">Changes are applied live — the engine picks up new values on its next batch.</p>
         </section>
 
-        {/* INDEXING ISSUES — shows failed/skipped files */}
-        {(failedFiles.length > 0 || skippedFiles.length > 0) && (
-          <section className={glassCard} style={{ padding: '24px', gridColumn: '1 / -1', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <h2 className={sectionTitle} style={{ margin: 0 }}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-                  <line x1="12" y1="9" x2="12" y2="13"/>
-                  <line x1="12" y1="17" x2="12.01" y2="17"/>
-                </svg>
-                Indexing Issues
-                <span style={{
-                  fontSize: '10px', fontWeight: 600, padding: '2px 8px', borderRadius: '6px',
-                  background: 'rgba(248,113,113,0.1)', color: '#f87171', marginLeft: '8px',
-                }}>
-                  {failedFiles.length + skippedFiles.length}
-                </span>
-              </h2>
-              <button
-                onClick={() => setShowIssues(!showIssues)}
-                style={{
-                  padding: '4px 12px', borderRadius: '8px', fontSize: '11px', fontWeight: 500,
-                  border: '1px solid var(--c-border)', background: 'var(--c-hit-bg)',
-                  color: 'var(--c-text-muted)', cursor: 'pointer', transition: 'all 200ms ease',
-                }}
-              >
-                {showIssues ? 'Hide' : 'Show Details'}
-              </button>
-            </div>
 
-            {!showIssues && (
-              <div style={{ fontSize: '12px', color: 'var(--c-text-muted)' }}>
-                {failedFiles.length > 0 && <span style={{ color: '#f87171' }}>{failedFiles.length} failed</span>}
-                {failedFiles.length > 0 && skippedFiles.length > 0 && ' · '}
-                {skippedFiles.length > 0 && <span style={{ color: '#facc15' }}>{skippedFiles.length} skipped</span>}
-              </div>
-            )}
-
-            {showIssues && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', maxHeight: '300px', overflowY: 'auto' }}>
-                {failedFiles.length > 0 && (
-                  <div>
-                    <div style={{ fontSize: '10px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#f87171', marginBottom: '8px' }}>
-                      Failed Files ({failedFiles.length})
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                      {failedFiles.map((f, i) => (
-                        <div key={i} style={{
-                          padding: '8px 12px', borderRadius: 'var(--radius-md)',
-                          background: 'rgba(248,113,113,0.04)', border: '1px solid rgba(248,113,113,0.1)',
-                          display: 'flex', flexDirection: 'column', gap: '2px',
-                        }}>
-                          <span style={{ fontSize: '11px', color: 'var(--c-text)', fontFamily: 'monospace', wordBreak: 'break-all' }}>
-                            {f.path.split('/').pop() || f.path}
-                          </span>
-                          <span style={{ fontSize: '10px', color: '#f87171' }}>{f.reason}</span>
-                          <span style={{ fontSize: '9px', color: 'var(--c-text-muted)', wordBreak: 'break-all' }}>{f.path}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {skippedFiles.length > 0 && (
-                  <div>
-                    <div style={{ fontSize: '10px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#facc15', marginBottom: '8px' }}>
-                      Skipped Files ({skippedFiles.length})
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                      {skippedFiles.map((f, i) => (
-                        <div key={i} style={{
-                          padding: '8px 12px', borderRadius: 'var(--radius-md)',
-                          background: 'rgba(250,204,21,0.04)', border: '1px solid rgba(250,204,21,0.08)',
-                          display: 'flex', flexDirection: 'column', gap: '2px',
-                        }}>
-                          <span style={{ fontSize: '11px', color: 'var(--c-text)', fontFamily: 'monospace', wordBreak: 'break-all' }}>
-                            {f.path.split('/').pop() || f.path}
-                          </span>
-                          <span style={{ fontSize: '10px', color: '#facc15' }}>{f.reason}</span>
-                          <span style={{ fontSize: '9px', color: 'var(--c-text-muted)', wordBreak: 'break-all' }}>{f.path}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </section>
-        )}
       </div>
 
       <footer style={{ textAlign: 'center', fontSize: '10px', color: 'var(--c-score-text)', letterSpacing: '0.1em', textTransform: 'uppercase', marginTop: '8px', position: 'relative', zIndex: 1 }}>

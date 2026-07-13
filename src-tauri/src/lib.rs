@@ -154,6 +154,7 @@ pub fn run() {
             commands::get_onboarding_status,
             commands::update_monitored_folders,
             commands::select_folders_dialog,
+            commands::list_indexed_files,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");

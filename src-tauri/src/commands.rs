@@ -242,6 +242,33 @@ pub async fn update_monitored_folders(
 }
 
 // ---------------------------------------------------------------------------
+// list_indexed_files
+// ---------------------------------------------------------------------------
+
+/// List all indexed documents from the daemon's database.
+///
+/// Returns `{ documents: [...], total: N }`.
+///
+/// **Front-end usage:**
+/// ```typescript
+/// const result = await invoke<{ documents: IndexedFile[], total: number }>('list_indexed_files');
+/// ```
+#[tauri::command]
+pub async fn list_indexed_files(
+    handle: State<'_, Arc<DaemonHandle>>,
+) -> Result<Value, String> {
+    let response = daemon::send_request(&handle, "list_documents", Value::Null)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if response.ok {
+        Ok(response.result.unwrap_or(Value::Null))
+    } else {
+        Err(response.error.unwrap_or_else(|| "unknown daemon error".to_string()))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // select_folders_dialog
 // ---------------------------------------------------------------------------
 
