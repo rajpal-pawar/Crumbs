@@ -55,9 +55,7 @@
       "binaries/crumbs-daemon"
     ],
     "resources": [
-      "models/*",
-      "binaries/pdfium.dll",
-      "binaries/libpdfium.so"
+      "../models"
     ]
   }
 }
