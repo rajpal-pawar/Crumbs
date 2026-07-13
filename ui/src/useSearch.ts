@@ -47,7 +47,7 @@ export function useSearch(query: string): SearchState {
       try {
         const resp = await invoke<SearchResponse>('search', {
           query: trimmed,
-          limit: 20,
+          limit: 10,
         });
 
         // Only update state if this is still the latest query.

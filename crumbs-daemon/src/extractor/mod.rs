@@ -272,8 +272,18 @@ fn extract_text(path: &Path, config: &Config) -> Result<Option<Extracted>, Extra
 // ---------------------------------------------------------------------------
 
 fn extract_pdf(path: &Path, config: &Config) -> Result<Extracted, ExtractError> {
-    let raw = std::fs::read(path).map_err(ExtractError::Io)?;
-    let checksum = hex::encode(Sha256::digest(&raw));
+    let file = File::open(path).map_err(ExtractError::Io)?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        let n = reader.read(&mut chunk).map_err(ExtractError::Io)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&chunk[..n]);
+    }
+    let checksum = hex::encode(hasher.finalize());
     let mime_type = mime_guess::from_path(path).first_or_text_plain().to_string();
 
     use pdfium_render::prelude::*;
@@ -364,6 +374,11 @@ fn extract_pdf(path: &Path, config: &Config) -> Result<Extracted, ExtractError> 
 
         body.push_str(&page_text);
         body.push('\n');
+
+        if body.len() >= config.text_read_limit_bytes {
+            tracing::debug!(path = %path.display(), "hit text_read_limit_bytes, stopping PDF extraction");
+            break;
+        }
     }
 
     drop(ocr_engine);

@@ -12,12 +12,12 @@ import { ThemeToggle } from './ThemeContext';
 // SVG icons (inline — no icon library dependency)
 // ---------------------------------------------------------------------------
 
-const SearchIcon = () => (
-  <svg className="search-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
-    <circle cx="8.5" cy="8.5" r="5.5" />
-    <path d="M14.5 14.5 L18 18" strokeLinecap="round" />
-  </svg>
-);
+// const SearchIcon = () => (
+//   <svg className="search-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
+//     <circle cx="8.5" cy="8.5" r="5.5" />
+//     <path d="M14.5 14.5 L18 18" strokeLinecap="round" />
+//   </svg>
+// );
 
 const DocumentIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="file-icon">
@@ -67,8 +67,8 @@ function middleTruncate(path: string, maxLength: number = 65) {
 
 function HitRow({ hit, index, selected }: { hit: SearchHit; index: number; selected?: boolean }) {
   const matchType = classifyHit(hit.sources);
-  const badge     = badgeClass(matchType);
-  const ref       = useRef<HTMLDivElement>(null);
+  const badge = badgeClass(matchType);
+  const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (selected && ref.current) {
@@ -79,7 +79,7 @@ function HitRow({ hit, index, selected }: { hit: SearchHit; index: number; selec
   // Show only the file name portion for readability; full path on hover.
   const filename = hit.title || hit.path.split(/[\\/]/).pop() || hit.path;
   const parentPath = hit.path.substring(0, Math.max(hit.path.lastIndexOf('/'), hit.path.lastIndexOf('\\'))) || hit.path;
-  const dirPath  = middleTruncate(parentPath, 65);
+  const dirPath = middleTruncate(parentPath, 65);
 
   // Clicking opens the file via the shell.
   const handleOpen = useCallback(() => {
@@ -139,16 +139,16 @@ export default function App() {
     return <Dashboard />;
   }
 
-  const [query, setQuery]   = useState('');
+  const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(-1);
-  const [indexedCount, setIndexedCount]   = useState(0);
+  const [indexedCount, setIndexedCount] = useState(0);
   const [processedCount, setProcessedCount] = useState(0);
-  const [errorsCount, setErrorsCount]       = useState(0);
-  const [skippedCount, setSkippedCount]     = useState(0);
-  const [totalCount, setTotalCount]       = useState(0);
-  const [engineStatus, setEngineStatus]   = useState('idle');
-  const inputRef            = useRef<HTMLInputElement>(null);
-  const searchState         = useSearch(query);
+  const [errorsCount, setErrorsCount] = useState(0);
+  const [skippedCount, setSkippedCount] = useState(0);
+  const [totalCount, setTotalCount] = useState(0);
+  const [engineStatus, setEngineStatus] = useState('idle');
+  const inputRef = useRef<HTMLInputElement>(null);
+  const searchState = useSearch(query);
   const [isOnboarded, setIsOnboarded] = useState<boolean | null>(null); // null = loading
   const [onboardingChecked, setOnboardingChecked] = useState(false);
 
@@ -305,7 +305,7 @@ export default function App() {
       {/* Search bar                                                          */}
       {/* ------------------------------------------------------------------ */}
       <div className="search-bar">
-        <SearchIcon />
+        <img src="/logo.png" alt="Crumbs" style={{ width: '20px', height: '20px', objectFit: 'contain', marginLeft: '4px', opacity: 0.9 }} />
 
         <input
           id="crumbs-search"

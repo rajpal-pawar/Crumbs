@@ -249,7 +249,7 @@ export default function Dashboard() {
 
   return (
     <div style={{
-      minHeight: '100vh',
+      height: '100vh',
       background: 'var(--c-bg)',
       color: 'var(--c-text)',
       fontFamily: "'Inter', system-ui, sans-serif",
@@ -280,6 +280,7 @@ export default function Dashboard() {
       <header className={glassCard} style={{ padding: '24px', position: 'relative', zIndex: 1 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <img src="/logo.png" alt="Crumbs" style={{ width: '40px', height: '40px', objectFit: 'contain' }} />
             <div style={{
               width: '10px', height: '10px', borderRadius: '50%',
               background: paused ? '#71717a' : isEngineActive ? 'var(--c-accent)' : '#52525b',
