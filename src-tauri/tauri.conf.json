@@ -55,7 +55,7 @@
       "binaries/crumbs-daemon"
     ],
     "resources": [
-      "../models"
+     
     ]
   }
 }
