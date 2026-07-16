@@ -1,55 +1,66 @@
-name: 'Build and Release'
-
+name: Build Crumbs
 permissions:
   contents: write
-
 on:
   push:
     branches:
       - main
-    tags:
-      - 'v*'
-  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
 
 jobs:
-  build-tauri:
+  build:
     strategy:
       fail-fast: false
       matrix:
-        platform: [ubuntu-latest]
-
+        include:
+          - platform: windows-latest
+            args: "--target x86_64-pc-windows-msvc"
+            daemon_src: "crumbs-daemon/target/release/crumbs-daemon.exe"
+            daemon_dest: "src-tauri/binaries/crumbs-daemon-x86_64-pc-windows-msvc.exe"
+          - platform: ubuntu-latest
+            args: "--target x86_64-unknown-linux-gnu"
+            daemon_src: "crumbs-daemon/target/release/crumbs-daemon"
+            daemon_dest: "src-tauri/binaries/crumbs-daemon-x86_64-unknown-linux-gnu"
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: setup node
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: 'npm'
+          cache-dependency-path: ui/package-lock.json
 
-      - name: install Rust stable
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.platform == 'ubuntu-22.04' && 'x86_64-unknown-linux-gnu' || 'x86_64-pc-windows-msvc' }}
 
-      - name: install dependencies (ubuntu only)
-        if: matrix.platform == 'ubuntu-22.04'
+      - name: Install dependencies (ubuntu)
+        if: matrix.platform == 'ubuntu-latest'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - name: install frontend dependencies
-        run: npm install
-        working-directory: ./ui
+      - name: Compile Daemon Sidecar from Source
+        shell: bash
+        run: |
+          mkdir -p src-tauri/binaries
+          cd crumbs-daemon
+          cargo build --release
+          cd ..
+          cp ${{ matrix.daemon_src }} ${{ matrix.daemon_dest }}
 
-      - name: Build and Draft Release
+      - name: Build App and Draft Release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          projectPath: ./
-          tagName: app-v__VERSION__ # automatically replaces \_\_VERSION\_\_ with the app version
+          tagName: crumbs-v__VERSION__
           releaseName: 'Crumbs v__VERSION__'
           releaseBody: 'See the assets to download this version and install.'
           releaseDraft: true
           prerelease: false
+          args: ${{ matrix.args }}
+          projectPath: ./
