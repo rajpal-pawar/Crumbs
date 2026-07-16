@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react';
+import { useState, useEffect, useRef, useCallback, type KeyboardEvent } from 'react';
 import './index.css';
 import { useSearch } from './useSearch';
 import { classifyHit, badgeClass, type SearchHit } from './types';
@@ -8,58 +8,6 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import Dashboard from './components/Dashboard';
 import { ThemeToggle } from './ThemeContext';
 
-// ---------------------------------------------------------------------------
-// Resize handles for frameless window
-// ---------------------------------------------------------------------------
-const RESIZE_EDGE = 6; // px width of the invisible resize zone
-
-// Define locally — ResizeDirection is not re-exported from @tauri-apps/api/window
-// in all package versions, causing TS2459 when imported as a type.
-type ResizeDirection =
-  | 'East' | 'North' | 'NorthEast' | 'NorthWest'
-  | 'South' | 'SouthEast' | 'SouthWest' | 'West';
-
-// Extended style type to allow the non-standard -webkit-app-region property
-// without a TS2353 'unknown property' error.
-type HandleStyle = React.CSSProperties & { WebkitAppRegion?: string };
-
-const resizeHandleStyle = (dir: ResizeDirection): HandleStyle => {
-  const base: HandleStyle = {
-    position: 'absolute',
-    zIndex: 10000,
-    WebkitAppRegion: 'no-drag',
-    pointerEvents: 'auto',
-  };
-  switch (dir) {
-    case 'North':     return { ...base, top: 0, left: RESIZE_EDGE, right: RESIZE_EDGE, height: RESIZE_EDGE, cursor: 'n-resize' };
-    case 'South':     return { ...base, bottom: 0, left: RESIZE_EDGE, right: RESIZE_EDGE, height: RESIZE_EDGE, cursor: 's-resize' };
-    case 'East':      return { ...base, top: RESIZE_EDGE, right: 0, bottom: RESIZE_EDGE, width: RESIZE_EDGE, cursor: 'e-resize' };
-    case 'West':      return { ...base, top: RESIZE_EDGE, left: 0, bottom: RESIZE_EDGE, width: RESIZE_EDGE, cursor: 'w-resize' };
-    case 'NorthWest': return { ...base, top: 0, left: 0, width: RESIZE_EDGE, height: RESIZE_EDGE, cursor: 'nw-resize' };
-    case 'NorthEast': return { ...base, top: 0, right: 0, width: RESIZE_EDGE, height: RESIZE_EDGE, cursor: 'ne-resize' };
-    case 'SouthWest': return { ...base, bottom: 0, left: 0, width: RESIZE_EDGE, height: RESIZE_EDGE, cursor: 'sw-resize' };
-    case 'SouthEast': return { ...base, bottom: 0, right: 0, width: RESIZE_EDGE, height: RESIZE_EDGE, cursor: 'se-resize' };
-    default:          return base; // exhaustive guard — never reached
-  }
-};
-
-const ALL_DIRECTIONS: ResizeDirection[] = ['North','South','East','West','NorthEast','NorthWest','SouthEast','SouthWest'];
-
-function ResizeHandles() {
-  const handleMouseDown = (dir: ResizeDirection) => (e: ReactMouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    getCurrentWindow().startResizeDragging(dir).catch(console.error);
-  };
-
-  return (
-    <>
-      {ALL_DIRECTIONS.map(dir => (
-        <div key={dir} style={resizeHandleStyle(dir)} onMouseDown={handleMouseDown(dir)} />
-      ))}
-    </>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // SVG icons (inline — no icon library dependency)
@@ -362,8 +310,6 @@ export default function App() {
 
   return (
     <div className="crumbs-shell" role="combobox" aria-haspopup="listbox" aria-expanded={showResults}>
-      <ResizeHandles />
-
       {/* ------------------------------------------------------------------ */}
       {/* Drag handle — the only surface for moving the window               */}
       {/* ------------------------------------------------------------------ */}
