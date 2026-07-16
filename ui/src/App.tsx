@@ -4,7 +4,7 @@ import { useSearch } from './useSearch';
 import { classifyHit, badgeClass, type SearchHit } from './types';
 import Onboarding from './Onboarding';
 import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWindow, type ResizeDirection } from '@tauri-apps/api/window';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import Dashboard from './components/Dashboard';
 import { ThemeToggle } from './ThemeContext';
 
@@ -13,11 +13,21 @@ import { ThemeToggle } from './ThemeContext';
 // ---------------------------------------------------------------------------
 const RESIZE_EDGE = 6; // px width of the invisible resize zone
 
-const resizeHandleStyle = (dir: ResizeDirection): React.CSSProperties => {
-  const base: React.CSSProperties = {
+// Define locally — ResizeDirection is not re-exported from @tauri-apps/api/window
+// in all package versions, causing TS2459 when imported as a type.
+type ResizeDirection =
+  | 'East' | 'North' | 'NorthEast' | 'NorthWest'
+  | 'South' | 'SouthEast' | 'SouthWest' | 'West';
+
+// Extended style type to allow the non-standard -webkit-app-region property
+// without a TS2353 'unknown property' error.
+type HandleStyle = React.CSSProperties & { WebkitAppRegion?: string };
+
+const resizeHandleStyle = (dir: ResizeDirection): HandleStyle => {
+  const base: HandleStyle = {
     position: 'absolute',
     zIndex: 10000,
-    WebkitAppRegion: 'no-drag' as any,
+    WebkitAppRegion: 'no-drag',
     pointerEvents: 'auto',
   };
   switch (dir) {
@@ -25,10 +35,11 @@ const resizeHandleStyle = (dir: ResizeDirection): React.CSSProperties => {
     case 'South':     return { ...base, bottom: 0, left: RESIZE_EDGE, right: RESIZE_EDGE, height: RESIZE_EDGE, cursor: 's-resize' };
     case 'East':      return { ...base, top: RESIZE_EDGE, right: 0, bottom: RESIZE_EDGE, width: RESIZE_EDGE, cursor: 'e-resize' };
     case 'West':      return { ...base, top: RESIZE_EDGE, left: 0, bottom: RESIZE_EDGE, width: RESIZE_EDGE, cursor: 'w-resize' };
-    case 'NorthWest':  return { ...base, top: 0, left: 0, width: RESIZE_EDGE, height: RESIZE_EDGE, cursor: 'nw-resize' };
-    case 'NorthEast':  return { ...base, top: 0, right: 0, width: RESIZE_EDGE, height: RESIZE_EDGE, cursor: 'ne-resize' };
-    case 'SouthWest':  return { ...base, bottom: 0, left: 0, width: RESIZE_EDGE, height: RESIZE_EDGE, cursor: 'sw-resize' };
-    case 'SouthEast':  return { ...base, bottom: 0, right: 0, width: RESIZE_EDGE, height: RESIZE_EDGE, cursor: 'se-resize' };
+    case 'NorthWest': return { ...base, top: 0, left: 0, width: RESIZE_EDGE, height: RESIZE_EDGE, cursor: 'nw-resize' };
+    case 'NorthEast': return { ...base, top: 0, right: 0, width: RESIZE_EDGE, height: RESIZE_EDGE, cursor: 'ne-resize' };
+    case 'SouthWest': return { ...base, bottom: 0, left: 0, width: RESIZE_EDGE, height: RESIZE_EDGE, cursor: 'sw-resize' };
+    case 'SouthEast': return { ...base, bottom: 0, right: 0, width: RESIZE_EDGE, height: RESIZE_EDGE, cursor: 'se-resize' };
+    default:          return base; // exhaustive guard — never reached
   }
 };
 
