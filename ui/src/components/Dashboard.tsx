@@ -206,10 +206,14 @@ export default function Dashboard() {
           }
         }
         setFolderUpdating(true);
-        await invoke('update_monitored_folders', { folders: combined, isOnboarded: true });
-        setManagedFolders(combined);
+        try {
+          await invoke('update_monitored_folders', { folders: combined, isOnboarded: true });
+          setManagedFolders(combined);
+          fetchStatus();
+        } catch (error) {
+          alert(error);
+        }
         setFolderUpdating(false);
-        fetchStatus();
       }
     } catch (err) {
       console.error('[Dashboard] Add folder failed:', err);
@@ -224,8 +228,8 @@ export default function Dashboard() {
       await invoke('update_monitored_folders', { folders: updated, isOnboarded: true });
       setManagedFolders(updated);
       fetchStatus();
-    } catch (err) {
-      console.error('[Dashboard] Remove folder failed:', err);
+    } catch (error) {
+      alert(error);
     }
     setFolderUpdating(false);
   };

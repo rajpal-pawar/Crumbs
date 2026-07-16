@@ -16,7 +16,7 @@
         "title": "Crumbs",
         "width": 720,
         "height": 520,
-        "resizable": false,
+        "resizable": true,
         "fullscreen": false,
         "decorations": false,
         "transparent": true,

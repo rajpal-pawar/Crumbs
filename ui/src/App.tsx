@@ -1,12 +1,54 @@
-import { useState, useEffect, useRef, useCallback, type KeyboardEvent } from 'react';
+import { useState, useEffect, useRef, useCallback, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react';
 import './index.css';
 import { useSearch } from './useSearch';
 import { classifyHit, badgeClass, type SearchHit } from './types';
 import Onboarding from './Onboarding';
 import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { getCurrentWindow, type ResizeDirection } from '@tauri-apps/api/window';
 import Dashboard from './components/Dashboard';
 import { ThemeToggle } from './ThemeContext';
+
+// ---------------------------------------------------------------------------
+// Resize handles for frameless window
+// ---------------------------------------------------------------------------
+const RESIZE_EDGE = 6; // px width of the invisible resize zone
+
+const resizeHandleStyle = (dir: ResizeDirection): React.CSSProperties => {
+  const base: React.CSSProperties = {
+    position: 'absolute',
+    zIndex: 10000,
+    WebkitAppRegion: 'no-drag' as any,
+    pointerEvents: 'auto',
+  };
+  switch (dir) {
+    case 'North':     return { ...base, top: 0, left: RESIZE_EDGE, right: RESIZE_EDGE, height: RESIZE_EDGE, cursor: 'n-resize' };
+    case 'South':     return { ...base, bottom: 0, left: RESIZE_EDGE, right: RESIZE_EDGE, height: RESIZE_EDGE, cursor: 's-resize' };
+    case 'East':      return { ...base, top: RESIZE_EDGE, right: 0, bottom: RESIZE_EDGE, width: RESIZE_EDGE, cursor: 'e-resize' };
+    case 'West':      return { ...base, top: RESIZE_EDGE, left: 0, bottom: RESIZE_EDGE, width: RESIZE_EDGE, cursor: 'w-resize' };
+    case 'NorthWest':  return { ...base, top: 0, left: 0, width: RESIZE_EDGE, height: RESIZE_EDGE, cursor: 'nw-resize' };
+    case 'NorthEast':  return { ...base, top: 0, right: 0, width: RESIZE_EDGE, height: RESIZE_EDGE, cursor: 'ne-resize' };
+    case 'SouthWest':  return { ...base, bottom: 0, left: 0, width: RESIZE_EDGE, height: RESIZE_EDGE, cursor: 'sw-resize' };
+    case 'SouthEast':  return { ...base, bottom: 0, right: 0, width: RESIZE_EDGE, height: RESIZE_EDGE, cursor: 'se-resize' };
+  }
+};
+
+const ALL_DIRECTIONS: ResizeDirection[] = ['North','South','East','West','NorthEast','NorthWest','SouthEast','SouthWest'];
+
+function ResizeHandles() {
+  const handleMouseDown = (dir: ResizeDirection) => (e: ReactMouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    getCurrentWindow().startResizeDragging(dir).catch(console.error);
+  };
+
+  return (
+    <>
+      {ALL_DIRECTIONS.map(dir => (
+        <div key={dir} style={resizeHandleStyle(dir)} onMouseDown={handleMouseDown(dir)} />
+      ))}
+    </>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // SVG icons (inline — no icon library dependency)
@@ -275,6 +317,14 @@ export default function App() {
             invoke('open_file', { path: hits[targetIdx].path }).catch(console.error);
           });
         }
+      } else if (e.key === '/') {
+        // Focus search input when '/' is pressed (unless already typing)
+        const tag = (e.target as HTMLElement)?.tagName;
+        if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
+          e.preventDefault();
+          inputRef.current?.focus();
+          inputRef.current?.select();
+        }
       }
     };
     window.addEventListener('keydown', handleGlobal);
@@ -301,6 +351,21 @@ export default function App() {
 
   return (
     <div className="crumbs-shell" role="combobox" aria-haspopup="listbox" aria-expanded={showResults}>
+      <ResizeHandles />
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Drag handle — the only surface for moving the window               */}
+      {/* ------------------------------------------------------------------ */}
+      <div className="drag-handle" data-tauri-drag-region>
+        <svg className="drag-handle__dots" viewBox="0 0 24 6" fill="currentColor" data-tauri-drag-region>
+          <circle cx="4"  cy="3" r="1.2" />
+          <circle cx="8"  cy="3" r="1.2" />
+          <circle cx="12" cy="3" r="1.2" />
+          <circle cx="16" cy="3" r="1.2" />
+          <circle cx="20" cy="3" r="1.2" />
+        </svg>
+      </div>
+
       {/* ------------------------------------------------------------------ */}
       {/* Search bar                                                          */}
       {/* ------------------------------------------------------------------ */}

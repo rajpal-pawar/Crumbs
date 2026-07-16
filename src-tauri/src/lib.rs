@@ -155,6 +155,7 @@ pub fn run() {
             commands::update_monitored_folders,
             commands::select_folders_dialog,
             commands::list_indexed_files,
+            commands::download_models,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");

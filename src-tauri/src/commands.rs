@@ -309,3 +309,187 @@ pub async fn select_folders_dialog(
 
     rx.await.map_err(|_| "dialog channel closed".to_string())
 }
+
+// ---------------------------------------------------------------------------
+// app_models_dir  (private helper)
+// ---------------------------------------------------------------------------
+
+/// Returns the platform-appropriate models directory:
+///   Windows : `%LOCALAPPDATA%\com.crumbs.app\models\`
+///   Linux   : `$XDG_DATA_HOME/com.crumbs.app/models/`  (fallback: `~/.local/share/…`)
+///   macOS   : `~/Library/Application Support/com.crumbs.app/models/`
+fn app_models_dir() -> Result<std::path::PathBuf, String> {
+    // `dirs` is already available transitively through Tauri; we use its own
+    // data_local_dir() which maps correctly on every platform.
+    let base = dirs::data_local_dir()
+        .ok_or_else(|| "Cannot determine system data directory".to_string())?;
+    Ok(base.join("com.crumbs.app").join("models"))
+}
+
+// ---------------------------------------------------------------------------
+// download_models
+// ---------------------------------------------------------------------------
+
+/// Download the models bundle from a GitHub Release URL, stream it to disk,
+/// extract it, and remove the temporary archive.
+///
+/// Progress events are emitted to the **main** window as:
+/// ```json
+/// { "event": "crumbs://download-progress", "payload": { "pct": 42 } }
+/// ```
+///
+/// On success the command returns `Ok("done")`.
+/// On any failure it returns `Err("<human-readable message>")` so that the
+/// React front-end can surface it via a blocking alert.
+///
+/// **Front-end usage:**
+/// ```typescript
+/// await invoke('download_models', {
+///   url: 'https://github.com/…/releases/download/…/models.zip'
+/// });
+/// ```
+#[tauri::command]
+pub async fn download_models(
+    url: String,
+    app: AppHandle,
+) -> Result<String, String> {
+    use futures_util::StreamExt;
+    use std::io::Write;
+    use tauri::Emitter;
+
+    tracing::info!("download_models: starting — {}", url);
+
+    // ── 1. Resolve destination directory ────────────────────────────────────
+    let models_dir = app_models_dir()?;
+    tokio::fs::create_dir_all(&models_dir)
+        .await
+        .map_err(|e| format!("Cannot create models directory: {e}"))?;
+
+    // ── 2. Temporary archive path ────────────────────────────────────────────
+    let tmp_zip = models_dir.with_file_name("models.zip.tmp");
+
+    // ── 3. Issue the HTTP GET ────────────────────────────────────────────────
+    let client = reqwest::Client::builder()
+        .user_agent("Crumbs/1.0")
+        // Follow GitHub's redirect to the CDN asset
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
+
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {e}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Server returned {}: {}",
+            response.status().as_u16(),
+            response.status().canonical_reason().unwrap_or("unknown")
+        ));
+    }
+
+    // Content-Length for progress reporting (may be absent for chunked transfers)
+    let total_bytes: Option<u64> = response.content_length();
+
+    tracing::info!(
+        "download_models: response OK — total bytes: {:?}",
+        total_bytes
+    );
+
+    // ── 4. Stream bytes → temporary file ────────────────────────────────────
+    // We use a blocking file write inside spawn_blocking to avoid holding an
+    // async executor thread while doing heavy I/O.
+    {
+        // Open the file synchronously from within a blocking context.
+        let tmp_zip_clone = tmp_zip.clone();
+        let mut file = tokio::task::spawn_blocking(move || {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&tmp_zip_clone)
+                .map_err(|e| format!("Cannot open temp file: {e}"))
+        })
+        .await
+        .map_err(|e| format!("spawn_blocking failed: {e}"))??;
+
+        let mut downloaded: u64 = 0;
+        let mut last_pct: u64 = 0;
+        let mut stream = response.bytes_stream();
+
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result
+                .map_err(|e| format!("Download stream error: {e}"))?;
+
+            // Write the chunk synchronously (file is Sync).
+            file.write_all(&chunk)
+                .map_err(|e| format!("File write error: {e}"))?;
+
+            downloaded += chunk.len() as u64;
+
+            // ── 5. Emit progress events ───────────────────────────────────
+            if let Some(total) = total_bytes {
+                let pct = (downloaded * 100) / total;
+                if pct != last_pct {
+                    last_pct = pct;
+                    // Best-effort emit — don't abort download on event failure.
+                    let _ = app.emit(
+                        "crumbs://download-progress",
+                        serde_json::json!({ "pct": pct }),
+                    );
+                }
+            }
+        }
+
+        // Flush remaining data.
+        file.flush()
+            .map_err(|e| format!("File flush error: {e}"))?;
+    }
+
+    tracing::info!(
+        "download_models: download complete — extracting to {:?}",
+        models_dir
+    );
+
+    // ── 6. Extract the zip ───────────────────────────────────────────────────
+    // zip crate is synchronous — run inside spawn_blocking so we don't block
+    // the async executor.
+    let tmp_zip_clone = tmp_zip.clone();
+    let models_dir_clone = models_dir.clone();
+
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let zip_file = std::fs::File::open(&tmp_zip_clone)
+            .map_err(|e| format!("Cannot open archive for extraction: {e}"))?;
+
+        let mut archive = zip::ZipArchive::new(zip_file)
+            .map_err(|e| format!("Invalid zip archive: {e}"))?;
+
+        archive
+            .extract(&models_dir_clone)
+            .map_err(|e| format!("Extraction failed: {e}"))?;
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking (extract) failed: {e}"))??;
+
+    tracing::info!("download_models: extraction complete");
+
+    // ── 7. Clean up the temporary archive ───────────────────────────────────
+    if let Err(e) = tokio::fs::remove_file(&tmp_zip).await {
+        // Non-fatal — log and continue.
+        tracing::warn!("download_models: failed to delete temp zip: {e}");
+    }
+
+    // ── 8. Signal success ────────────────────────────────────────────────────
+    let _ = app.emit(
+        "crumbs://download-progress",
+        serde_json::json!({ "pct": 100 }),
+    );
+
+    tracing::info!("download_models: done — models at {:?}", models_dir);
+    Ok("done".to_string())
+}
+

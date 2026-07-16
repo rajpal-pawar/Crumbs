@@ -208,8 +208,12 @@ export default function SettingsDashboard({ open, onClose }: SettingsDashboardPr
           }
         }
         setFolderUpdating(true);
-        await invoke('update_monitored_folders', { folders: combined, isOnboarded: true });
-        setManagedFolders(combined);
+        try {
+          await invoke('update_monitored_folders', { folders: combined, isOnboarded: true });
+          setManagedFolders(combined);
+        } catch (error) {
+          alert(error);
+        }
         setFolderUpdating(false);
       }
     } catch (err) {
@@ -225,8 +229,8 @@ export default function SettingsDashboard({ open, onClose }: SettingsDashboardPr
     try {
       await invoke('update_monitored_folders', { folders: updated, isOnboarded: true });
       setManagedFolders(updated);
-    } catch (err) {
-      console.error('[Crumbs] remove folder failed:', err);
+    } catch (error) {
+      alert(error);
     }
     setFolderUpdating(false);
   };

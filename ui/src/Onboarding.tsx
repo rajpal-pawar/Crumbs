@@ -95,6 +95,7 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
       onComplete();
     } catch (err) {
       console.error('[Crumbs] onboarding submission error:', err);
+      alert(err);
       setError(`Failed to save configuration: ${err}`);
       setIsSubmitting(false);
     }

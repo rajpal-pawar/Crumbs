@@ -52,10 +52,22 @@
 
 html, body, #root {
   height: 100%;
+  width: 100%;
   background: transparent;
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   cursor: default;
+  pointer-events: none;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 0;
+  background-color: transparent;
 }
 
 /* === Glass Card Mixin (applied via class) === */
@@ -92,10 +104,43 @@ html, body, #root {
 
 /* === Spotlight Container === */
 .crumbs-shell {
-  position: fixed; top: 18vh; left: 50%;
-  transform: translateX(-50%);
-  width: min(680px, 94vw);
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 320px;
   z-index: 9999;
+  pointer-events: auto;
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  overflow: visible;
+}
+
+/* === Drag Handle === */
+.drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 18px;
+  background: var(--c-surface-solid);
+  border: 1px solid var(--c-border);
+  border-bottom: none;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  cursor: grab;
+  -webkit-app-region: drag;
+  transition: background var(--transition);
+  opacity: 0.7;
+}
+.drag-handle:hover {
+  opacity: 1;
+  background: var(--c-hit-hover);
+}
+.drag-handle:active { cursor: grabbing; }
+.drag-handle__dots {
+  width: 28px;
+  height: 6px;
+  color: var(--c-text-muted);
+  pointer-events: none;
 }
 
 /* === Search Bar === */
@@ -105,10 +150,11 @@ html, body, #root {
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
   border: 1px solid var(--c-border);
-  border-radius: var(--radius-lg);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
   padding: 0 16px;
   box-shadow: var(--glass-shadow);
   transition: border-color var(--transition);
+  -webkit-app-region: no-drag;
 }
 .search-bar:focus-within { border-color: var(--c-border-focus); }
 
@@ -118,6 +164,7 @@ html, body, #root {
   flex: 1; background: transparent; border: none; outline: none;
   color: var(--c-text); font-size: 17px; font-weight: 400;
   letter-spacing: -0.01em; height: 52px; caret-color: var(--c-accent);
+  -webkit-app-region: no-drag;
 }
 .search-input::placeholder { color: var(--c-text-muted); }
 
@@ -131,7 +178,7 @@ html, body, #root {
 
 /* === Results === */
 .results-panel {
-  margin-top: 6px;
+  margin-top: 2px;
   background: var(--c-surface-solid);
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
@@ -140,6 +187,7 @@ html, body, #root {
   box-shadow: var(--glass-shadow);
   overflow: hidden;
   animation: slide-in 100ms ease forwards;
+  -webkit-app-region: no-drag;
 }
 
 @keyframes slide-in {
