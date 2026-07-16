@@ -8,6 +8,8 @@ Crumbs is an intelligent, on-device semantic file search engine. It allows you t
 - **Multimodal**: Supports text and image search using CLIP and MiniLM models.
 - **Privacy First**: Everything runs locally on your machine. No data is sent to the cloud.
 - **Lightweight**: Optimized to run quietly in the background with minimal resource usage.
+- **High-Performance PDF Parsing**: Ingests massive textbook PDFs with near-zero memory footprint using stream-based checksums and dynamic text-limit short-circuiting.
+- **Premium UI/UX**: Features a sleek glassmorphism theme, animated dynamic scrollbars, and an efficient scrollable top-10 search results view to minimize clutter.
 - **User-Controlled Indexing**: You choose exactly which folders Crumbs should index and monitor.
 
 ## Architecture
@@ -140,6 +142,24 @@ To compile a standalone bundle (e.g., `.app` for macOS, `.deb`/`.AppImage` for L
 ```bash
 npm run tauri build
 ```
+
+---
+
+## Automated Production Build Pipeline (v1.0.0+)
+
+For a completely automated "Fat Installer" build (bundling the daemon, models, PDFium, and frontend into a single distributable), we provide cross-platform build wrapper scripts. **Make sure you have compiled the daemon and downloaded the models first.**
+
+**Windows:**
+```powershell
+.\ui\build-production.ps1
+```
+
+**Linux:**
+```bash
+cd ui
+./build-production.sh
+```
+These scripts will automatically verify dependencies, trigger the Tauri compiler from the correct directory context, and output your final bundled installers (`.msi`, `.exe`, `.deb`, `.AppImage`) in the `src-tauri/target/release/bundle/` directory. There is also a fully automated GitHub Actions pipeline configured in `.github/workflows/build.yml` for CI/CD cloud compilation.
 
 ---
 
