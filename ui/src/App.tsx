@@ -153,21 +153,33 @@ function MainApp() {
 
   useEffect(() => {
     let unlistenProgress: (() => void) | undefined;
+    let unlistenError: (() => void) | undefined;
+    
     import('@tauri-apps/api/event').then(({ listen }) => {
-      listen<any>('crumbs://download-progress', (event) => {
-        const payload = event.payload;
-        if (payload && payload.pct !== undefined) {
-          setDownloadPct(payload.pct);
-          if (payload.pct === 100) {
+      listen<number>('download-progress', (event) => {
+        const pct = event.payload;
+        if (typeof pct === 'number') {
+          setDownloadPct(pct);
+          if (pct === 100) {
              setSystemStatus('ready');
           }
         }
       }).then(un => {
         unlistenProgress = un;
       });
+
+      listen<string>('download-error', (event) => {
+        const errMsg = event.payload;
+        setSystemStatus('checking'); // Revert state on error
+        alert(`Model Download Error:\n\n${errMsg}`);
+      }).then(un => {
+        unlistenError = un;
+      });
     });
+
     return () => {
       if (unlistenProgress) unlistenProgress();
+      if (unlistenError) unlistenError();
     };
   }, []);
 
@@ -225,9 +237,11 @@ function MainApp() {
           <h2 className="onboarding-title">Downloading Models</h2>
           <p className="onboarding-subtitle" style={{ marginBottom: '24px' }}>Please wait while we fetch the AI models...</p>
           <div className="dashboard-progress__bar">
-            <div className="dashboard-progress__fill dashboard-progress__fill--active" style={{ width: `${downloadPct}%` }} />
+            <div className="dashboard-progress__fill dashboard-progress__fill--active" style={{ width: `${downloadPct < 0 ? 100 : downloadPct}%` }} />
           </div>
-          <p style={{ marginTop: '14px', fontSize: '14px', color: 'var(--c-text-muted)', fontWeight: 600 }}>{downloadPct}%</p>
+          <p style={{ marginTop: '14px', fontSize: '14px', color: 'var(--c-text-muted)', fontWeight: 600 }}>
+            {downloadPct < 0 ? 'Downloading... (Unknown size)' : `${Math.round(downloadPct)}%`}
+          </p>
         </div>
       </div>
     );
