@@ -113,6 +113,18 @@ export default function Dashboard() {
         }));
         if (res.failed_files && statusRef.current !== 'indexing') setFailedFiles(res.failed_files);
         if (res.skipped_files && statusRef.current !== 'indexing') setSkippedFiles(res.skipped_files);
+        
+        if (res.status !== 'indexing' && res.status !== 'scanning') {
+          const e = res.failed_files?.length || 0;
+          const s = res.skipped_files?.length || 0;
+          const i = res.doc_count || 0;
+          const t = i + e + s;
+          setIndexed(i);
+          setErrors(e);
+          setSkipped(s);
+          setTotal(t);
+          setProcessed(t);
+        }
       }
     } catch (err) {
       console.error('[Dashboard] Failed to fetch daemon status:', err);
