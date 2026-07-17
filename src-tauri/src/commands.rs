@@ -493,3 +493,35 @@ pub async fn download_models(
     Ok("done".to_string())
 }
 
+// ---------------------------------------------------------------------------
+// check_models_exist
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn check_models_exist() -> Result<bool, String> {
+    let dir = app_models_dir()?;
+    if !dir.exists() {
+        return Ok(false);
+    }
+    let mut has_files = false;
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            if entry.path().is_file() {
+                has_files = true;
+                break;
+            }
+        }
+    }
+    Ok(has_files)
+}
+
+// ---------------------------------------------------------------------------
+// start_model_download
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn start_model_download(app: AppHandle) -> Result<String, String> {
+    let url = "https://github.com/nomic-ai/nomic-embed-text-v1.5/archive/refs/heads/main.zip".to_string();
+    download_models(url, app).await
+}
+

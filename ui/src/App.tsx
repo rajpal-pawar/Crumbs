@@ -136,25 +136,54 @@ function HitRow({ hit, index, selected }: { hit: SearchHit; index: number; selec
 
 export default function App() {
   const windowLabel = getCurrentWindow().label;
-  if (windowLabel === 'settings') {
-    return <Dashboard />;
+  
+  if (windowLabel === 'search') {
+    return <SearchOverlay />;
   }
 
-  const [query, setQuery] = useState('');
-  const [selectedIndex, setSelectedIndex] = useState(-1);
-  const [indexedCount, setIndexedCount] = useState(0);
-  const [processedCount, setProcessedCount] = useState(0);
-  const [errorsCount, setErrorsCount] = useState(0);
-  const [skippedCount, setSkippedCount] = useState(0);
-  const [totalCount, setTotalCount] = useState(0);
-  const [engineStatus, setEngineStatus] = useState('idle');
-  const inputRef = useRef<HTMLInputElement>(null);
-  const searchState = useSearch(query);
-  const [isOnboarded, setIsOnboarded] = useState<boolean | null>(null); // null = loading
+  // Otherwise, it's the settings/dashboard view which handles boot checks
+  return <MainApp />;
+}
+
+function MainApp() {
+  const [systemStatus, setSystemStatus] = useState<'checking' | 'downloading' | 'ready'>('checking');
+  const [downloadPct, setDownloadPct] = useState(0);
+  const [isOnboarded, setIsOnboarded] = useState<boolean | null>(null);
   const [onboardingChecked, setOnboardingChecked] = useState(false);
 
-  // Check onboarding status on mount
   useEffect(() => {
+    let unlistenProgress: (() => void) | undefined;
+    import('@tauri-apps/api/event').then(({ listen }) => {
+      listen<any>('crumbs://download-progress', (event) => {
+        const payload = event.payload;
+        if (payload && payload.pct !== undefined) {
+          setDownloadPct(payload.pct);
+          if (payload.pct === 100) {
+             setSystemStatus('ready');
+          }
+        }
+      }).then(un => {
+        unlistenProgress = un;
+      });
+    });
+    return () => {
+      if (unlistenProgress) unlistenProgress();
+    };
+  }, []);
+
+  useEffect(() => {
+    invoke<boolean>('check_models_exist').then(exists => {
+      if (exists) {
+        setSystemStatus('ready');
+      } else {
+        setSystemStatus('downloading');
+        invoke('start_model_download').catch(console.error);
+      }
+    }).catch(console.error);
+  }, []);
+
+  useEffect(() => {
+    if (systemStatus !== 'ready') return;
     let cancelled = false;
     const checkOnboarding = async () => {
       try {
@@ -165,20 +194,74 @@ export default function App() {
         }
       } catch (err) {
         console.error('[Crumbs] onboarding check failed:', err);
-        // If the daemon isn't ready yet, retry after a brief delay
         if (!cancelled) {
           setTimeout(checkOnboarding, 1500);
         }
       }
     };
-    // Small delay to let the daemon sidecar boot
     setTimeout(checkOnboarding, 800);
     return () => { cancelled = true; };
-  }, []);
+  }, [systemStatus]);
 
   const handleOnboardingComplete = useCallback(() => {
     setIsOnboarded(true);
   }, []);
+
+  if (systemStatus === 'checking') {
+    return (
+      <div className="onboarding-overlay">
+        <div className="onboarding-loading">
+          <span className="spinner" style={{ width: '24px', height: '24px' }} />
+          <span style={{ color: 'var(--c-text-muted)', marginTop: '12px', fontSize: '13px' }}>Checking system models…</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (systemStatus === 'downloading') {
+    return (
+      <div className="onboarding-overlay">
+        <div className="onboarding-panel" style={{ padding: '40px', textAlign: 'center', width: '380px' }}>
+          <h2 className="onboarding-title">Downloading Models</h2>
+          <p className="onboarding-subtitle" style={{ marginBottom: '24px' }}>Please wait while we fetch the AI models...</p>
+          <div className="dashboard-progress__bar">
+            <div className="dashboard-progress__fill dashboard-progress__fill--active" style={{ width: `${downloadPct}%` }} />
+          </div>
+          <p style={{ marginTop: '14px', fontSize: '14px', color: 'var(--c-text-muted)', fontWeight: 600 }}>{downloadPct}%</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!onboardingChecked || isOnboarded === null) {
+    return (
+      <div className="onboarding-overlay">
+        <div className="onboarding-loading">
+          <span className="spinner" style={{ width: '24px', height: '24px' }} />
+          <span style={{ color: 'var(--c-text-muted)', marginTop: '12px', fontSize: '13px' }}>Connecting to Crumbs engine…</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isOnboarded) {
+    return <Onboarding onComplete={handleOnboardingComplete} />;
+  }
+
+  return <Dashboard />;
+}
+
+function SearchOverlay() {
+  const [query, setQuery] = useState('');
+  const [selectedIndex, setSelectedIndex] = useState(-1);
+  const [indexedCount, setIndexedCount] = useState(0);
+  const [processedCount, setProcessedCount] = useState(0);
+  const [errorsCount, setErrorsCount] = useState(0);
+  const [skippedCount, setSkippedCount] = useState(0);
+  const [totalCount, setTotalCount] = useState(0);
+  const [engineStatus, setEngineStatus] = useState('idle');
+  const inputRef = useRef<HTMLInputElement>(null);
+  const searchState = useSearch(query);
 
   const showResults =
     searchState.status === 'results' ||
@@ -213,11 +296,6 @@ export default function App() {
     };
   }, []);
 
-  // -------------------------------------------------------------------------
-  // Focus the input whenever the Tauri window gains focus.
-  // The global shortcut (Ctrl+Space) is registered in src-tauri/src/lib.rs
-  // and shows/focuses the window; this effect picks up from there.
-  // -------------------------------------------------------------------------
   useEffect(() => {
     let unlistenTauriFocus: (() => void) | undefined;
 
@@ -233,7 +311,7 @@ export default function App() {
     // Standard web focus event
     window.addEventListener('focus', focusInput);
 
-    // Native Tauri focus event (fires when window.show() is called)
+    // Native Tauri focus event
     import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
       getCurrentWindow().listen('tauri://focus', focusInput).then(un => {
         unlistenTauriFocus = un;
@@ -249,9 +327,6 @@ export default function App() {
     };
   }, []);
 
-  // -------------------------------------------------------------------------
-  // Keyboard: Escape clears query / hides window. Arrows navigate.
-  // -------------------------------------------------------------------------
   useEffect(() => {
     const handleGlobal = (e: globalThis.KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -267,7 +342,6 @@ export default function App() {
         e.preventDefault();
         setSelectedIndex(prev => (prev > 0 ? prev - 1 : prev > -1 ? -1 : prev));
       } else if (e.key === 'Enter') {
-        // If they haven't explicitly navigated down but there are hits, default to the first hit.
         const targetIdx = selectedIndex >= 0 ? selectedIndex : (hits.length > 0 ? 0 : -1);
         if (targetIdx >= 0 && targetIdx < hits.length) {
           e.preventDefault();
@@ -277,7 +351,6 @@ export default function App() {
           });
         }
       } else if (e.key === '/') {
-        // Focus search input when '/' is pressed (unless already typing)
         const tag = (e.target as HTMLElement)?.tagName;
         if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
           e.preventDefault();
@@ -290,29 +363,8 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleGlobal);
   }, [query, hits, selectedIndex]);
 
-  // ── Onboarding gate ──
-  // Show loading splash while checking onboarding status
-  if (!onboardingChecked || isOnboarded === null) {
-    return (
-      <div className="onboarding-overlay">
-        <div className="onboarding-loading">
-          <span className="spinner" style={{ width: '24px', height: '24px' }} />
-          <span style={{ color: 'var(--c-text-muted)', marginTop: '12px', fontSize: '13px' }}>Connecting to Crumbs engine…</span>
-        </div>
-      </div>
-    );
-  }
-
-  // Show onboarding flow if not yet onboarded
-  if (!isOnboarded) {
-    return <Onboarding onComplete={handleOnboardingComplete} />;
-  }
-
   return (
     <div className="crumbs-shell" role="combobox" aria-haspopup="listbox" aria-expanded={showResults}>
-      {/* ------------------------------------------------------------------ */}
-      {/* Drag handle — the only surface for moving the window               */}
-      {/* ------------------------------------------------------------------ */}
       <div className="drag-handle" data-tauri-drag-region>
         <svg className="drag-handle__dots" viewBox="0 0 24 6" fill="currentColor" data-tauri-drag-region>
           <circle cx="4"  cy="3" r="1.2" />
@@ -323,9 +375,6 @@ export default function App() {
         </svg>
       </div>
 
-      {/* ------------------------------------------------------------------ */}
-      {/* Search bar                                                          */}
-      {/* ------------------------------------------------------------------ */}
       <div className="search-bar">
         <img src="/logo.png" alt="Crumbs" style={{ width: '20px', height: '20px', objectFit: 'contain', marginLeft: '4px', opacity: 0.9 }} />
 
@@ -377,9 +426,6 @@ export default function App() {
         </button>
       </div>
 
-      {/* ------------------------------------------------------------------ */}
-      {/* Results panel                                                       */}
-      {/* ------------------------------------------------------------------ */}
       {(showResults || !query) && (
         <div id="crumbs-results" className="results-panel" role="listbox" aria-label="Search results">
           {showResults && (
@@ -411,7 +457,6 @@ export default function App() {
             </ul>
           )}
 
-          {/* Footer */}
           <div className="results-footer">
             <span className="daemon-status">
               {(() => {

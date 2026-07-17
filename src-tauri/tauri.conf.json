@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "label": "main",
+        "label": "search",
         "title": "Crumbs",
         "width": 720,
         "height": 520,

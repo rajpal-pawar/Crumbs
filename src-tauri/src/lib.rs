@@ -56,7 +56,7 @@ pub fn run() {
                 .with_handler(move |app, shortcut, event| {
                     if event.state == ShortcutState::Pressed && shortcut == &ctrl_shift_space {
                         info!("Ctrl+Shift+Space shortcut pressed!");
-                        if let Some(window) = app.get_webview_window("main") {
+                        if let Some(window) = app.get_webview_window("search") {
                             if window.is_visible().unwrap_or(false) {
                                 window.hide().unwrap();
                             } else {
@@ -90,7 +90,7 @@ pub fn run() {
                 .on_menu_event(|app, event| {
                     match event.id().as_ref() {
                         "open_search" => {
-                            if let Some(window) = app.get_webview_window("main") {
+                            if let Some(window) = app.get_webview_window("search") {
                                 window.show().unwrap();
                                 window.set_focus().unwrap();
                             }
@@ -156,6 +156,8 @@ pub fn run() {
             commands::select_folders_dialog,
             commands::list_indexed_files,
             commands::download_models,
+            commands::check_models_exist,
+            commands::start_model_download,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tauri application");
