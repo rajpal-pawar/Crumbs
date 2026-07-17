@@ -162,6 +162,7 @@ function MainApp() {
           setDownloadPct(pct);
           if (pct === 100) {
              setSystemStatus('ready');
+             invoke('reindex').catch(console.error);
           }
         }
       }).then(un => {

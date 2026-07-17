@@ -231,7 +231,7 @@ pub async fn handle_status(
     };
 
     let minilm_ready = config.model_cache_dir().join("minilm-l6-int8.onnx").exists();
-    let clip_ready   = config.model_cache_dir().join("clip-vit-b32-int8.onnx").exists();
+    let clip_ready   = config.model_cache_dir().join("clip-vision-int8.onnx").exists();
 
     let db_size = std::fs::metadata(config.db_path()).map(|m| m.len()).unwrap_or(0);
     let onnx_memory = crate::state::get_model_manager().get_onnx_memory_footprint();
