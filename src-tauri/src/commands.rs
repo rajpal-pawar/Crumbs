@@ -451,7 +451,7 @@ pub fn check_models_exist() -> Result<bool, String> {
 
 #[tauri::command]
 pub async fn start_model_download(app: AppHandle) -> Result<String, String> {
-    let url = "https://github.com/nomic-ai/nomic-embed-text-v1.5/archive/refs/heads/main.zip".to_string();
+    let url = "https://github.com/rajpal-pawar/Crumbs/releases/download/crumbs-v1.0.0/models.zip".to_string();
     download_models(url, app).await
 }
 
