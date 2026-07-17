@@ -344,13 +344,10 @@ fn resolve_data_dir() -> Result<PathBuf, ConfigError> {
     if let Ok(dir_str) = std::env::var("CRUMBS_DATA_DIR") {
         return Ok(PathBuf::from(dir_str));
     }
-    if let Some(mut home) = dirs::home_dir() {
-        home.push(".local");
-        home.push("share");
-        home.push("crumbs");
-        Ok(home)
+    if let Some(base) = dirs::data_local_dir() {
+        Ok(base.join("com.crumbs.app"))
     } else {
-        Ok(PathBuf::from("/var/lib/crumbs"))
+        Ok(PathBuf::from("/var/lib/com.crumbs.app"))
     }
 }
 
