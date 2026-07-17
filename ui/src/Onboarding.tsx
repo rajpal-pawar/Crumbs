@@ -115,7 +115,7 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
 
         {/* Header */}
         <div className="onboarding-header">
-          <SparkleIcon />
+          <img src="/logo.png" alt="Crumbs Logo" style={{ width: '48px', height: '48px', objectFit: 'contain' }} />
           <h1 className="onboarding-title">Welcome to Crumbs</h1>
           <p className="onboarding-subtitle">
             Your intelligent, on-device file search engine.
