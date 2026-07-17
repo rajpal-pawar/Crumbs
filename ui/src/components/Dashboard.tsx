@@ -264,6 +264,7 @@ export default function Dashboard() {
       position: 'relative',
       overflowX: 'hidden',
       overflowY: 'auto',
+      pointerEvents: 'auto',
     }}>
       
       {/* Ambient glass blobs */}
@@ -466,11 +467,15 @@ export default function Dashboard() {
                     background: 'rgba(248,113,113,0.04)', border: '1px solid rgba(248,113,113,0.08)',
                     display: 'flex', flexDirection: 'column', gap: '2px',
                   }}>
-                    <span style={{ fontSize: '11px', color: 'var(--c-text)', fontFamily: 'monospace', wordBreak: 'break-all' }}>
-                      {f.path.split('/').pop() || f.path}
-                    </span>
-                    <span style={{ fontSize: '10px', color: '#f87171' }}>{f.reason}</span>
-                    <span style={{ fontSize: '9px', color: 'var(--c-text-muted)', wordBreak: 'break-all' }}>{f.path}</span>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+                      <span style={{ fontSize: '9px', fontWeight: 600, color: '#f87171', padding: '2px 6px', background: 'rgba(248,113,113,0.1)', borderRadius: '4px', whiteSpace: 'nowrap', marginTop: '1px' }}>
+                        {f.reason}
+                      </span>
+                      <span style={{ fontSize: '11px', color: 'var(--c-text)', fontFamily: 'monospace', wordBreak: 'break-all', marginTop: '1px' }}>
+                        {f.path.split('/').pop() || f.path}
+                      </span>
+                    </div>
+                    <span style={{ fontSize: '9px', color: 'var(--c-text-muted)', wordBreak: 'break-all', marginTop: '2px' }}>{f.path}</span>
                   </div>
                 ))}
               </div>
@@ -487,11 +492,15 @@ export default function Dashboard() {
                     background: 'rgba(250,204,21,0.04)', border: '1px solid rgba(250,204,21,0.06)',
                     display: 'flex', flexDirection: 'column', gap: '2px',
                   }}>
-                    <span style={{ fontSize: '11px', color: 'var(--c-text)', fontFamily: 'monospace', wordBreak: 'break-all' }}>
-                      {f.path.split('/').pop() || f.path}
-                    </span>
-                    <span style={{ fontSize: '10px', color: '#facc15' }}>{f.reason}</span>
-                    <span style={{ fontSize: '9px', color: 'var(--c-text-muted)', wordBreak: 'break-all' }}>{f.path}</span>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+                      <span style={{ fontSize: '9px', fontWeight: 600, color: '#facc15', padding: '2px 6px', background: 'rgba(250,204,21,0.1)', borderRadius: '4px', whiteSpace: 'nowrap', marginTop: '1px' }}>
+                        {f.reason}
+                      </span>
+                      <span style={{ fontSize: '11px', color: 'var(--c-text)', fontFamily: 'monospace', wordBreak: 'break-all', marginTop: '1px' }}>
+                        {f.path.split('/').pop() || f.path}
+                      </span>
+                    </div>
+                    <span style={{ fontSize: '9px', color: 'var(--c-text-muted)', wordBreak: 'break-all', marginTop: '2px' }}>{f.path}</span>
                   </div>
                 ))}
               </div>

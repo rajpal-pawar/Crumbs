@@ -185,7 +185,7 @@ async fn dispatch(req: Request, config: Arc<Config>, db: Arc<Database>, writer: 
             handlers::handle_search(req, &config, &db).await
         }
         "status" => {
-            handlers::handle_status(req, &config, &db).await
+            handlers::handle_status(req, &config, &db, &atomic_config).await
         }
         "reindex" => {
             handlers::handle_reindex(req, &config, &db, writer.clone()).await

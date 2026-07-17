@@ -207,6 +207,7 @@ pub async fn handle_status(
     req: Request,
     config: &Arc<Config>,
     db: &Arc<Database>,
+    atomic_config: &Arc<AtomicConfig>,
 ) -> Response {
     debug!(id = %req.id, "handling status request");
 
@@ -251,6 +252,10 @@ pub async fn handle_status(
         "idle"
     };
 
+    let watch_dirs_paths = atomic_config.watch_dirs.read()
+        .map(|d| d.clone())
+        .unwrap_or_default();
+
     Response::success(
         req.id,
         json!({
@@ -269,8 +274,7 @@ pub async fn handle_status(
                 "clip_ready":   clip_ready,
             },
             "doc_count":        doc_count,
-            "watch_dirs":       config
-                                    .watch_dirs
+            "watch_dirs":       watch_dirs_paths
                                     .iter()
                                     .map(|p| p.display().to_string())
                                     .collect::<Vec<_>>(),
