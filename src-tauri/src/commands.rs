@@ -407,6 +407,26 @@ async fn do_download_models(url: String, app: &AppHandle) -> Result<(), String> 
             .map_err(|e| format!("Invalid zip archive: {e}"))?;
         archive.extract(&models_dir_clone)
             .map_err(|e| format!("Extraction failed: {e}"))?;
+
+        let nested_models_dir = models_dir_clone.join("models");
+        if nested_models_dir.exists() && nested_models_dir.is_dir() {
+            tracing::info!("Flattening nested 'models' directory...");
+            if let Ok(entries) = std::fs::read_dir(&nested_models_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Some(file_name) = path.file_name() {
+                        let dest = models_dir_clone.join(file_name);
+                        if let Err(e) = std::fs::rename(&path, &dest) {
+                            tracing::warn!("Failed to move {:?} to {:?}: {}", path, dest, e);
+                        }
+                    }
+                }
+            }
+            if let Err(e) = std::fs::remove_dir(&nested_models_dir) {
+                tracing::warn!("Failed to remove empty nested directory: {}", e);
+            }
+        }
+
         Ok(())
     })
     .await

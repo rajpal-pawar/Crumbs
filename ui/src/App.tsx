@@ -7,6 +7,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import Dashboard from './components/Dashboard';
 import { ThemeToggle } from './ThemeContext';
+import { enable } from '@tauri-apps/plugin-autostart';
 
 
 // ---------------------------------------------------------------------------
@@ -163,6 +164,7 @@ function MainApp() {
           if (pct === 100) {
              setSystemStatus('ready');
              invoke('reindex').catch(console.error);
+             enable().catch(console.error);
           }
         }
       }).then(un => {

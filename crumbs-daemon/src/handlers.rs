@@ -516,10 +516,14 @@ fn run_reindex_pipeline_internal_impl(
                     continue;
                 }
                 Err(e) => {
-                    tracing::error!(path = %path.display(), error = ?e, "Extraction failed — skipping");
-                    stats.errors += 1;
-                    stats.failed_files.push((path.display().to_string(), format!("{}", e)));
-                    continue;
+                    tracing::warn!(path = %path.display(), error = ?e, "Extraction failed — falling back to filename indexing");
+                    let filename = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let mime_type = mime_guess::from_path(&path).first_or_text_plain().to_string();
+                    extractor::Extracted::Text {
+                        chunks: vec![filename],
+                        checksum: "fallback_hash".to_string(),
+                        mime_type,
+                    }
                 }
             };
 
@@ -1269,7 +1273,16 @@ fn index_single_file(
     let extracted = match extractor::extract(path, config) {
         Ok(Some(e)) => e,
         Ok(None) => return Ok(()),
-        Err(e) => return Err(e.to_string()),
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = ?e, "Extraction failed — falling back to filename indexing");
+            let filename = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let mime_type = mime_guess::from_path(path).first_or_text_plain().to_string();
+            extractor::Extracted::Text {
+                chunks: vec![filename],
+                checksum: "fallback_hash".to_string(),
+                mime_type,
+            }
+        }
     };
 
     let title = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();

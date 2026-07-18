@@ -69,6 +69,10 @@ pub fn run() {
                 .build()
         })
         // -------------------------------------------------------------------
+        // Autostart plugin — register the app to launch on boot.
+        // -------------------------------------------------------------------
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--background"])))
+        // -------------------------------------------------------------------
         // Setup hook: launch the daemon before the first window opens.
         // -------------------------------------------------------------------
         .setup(|app| {
