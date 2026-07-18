@@ -1,6 +1,6 @@
 <div align="center">
   <img src="ui/public/logo-transparent.png" alt="Crumbs Logo" width="220" />
-  <h1>Crumbs</h1>
+ 
   <p><strong>Your intelligent, on-device file search engine.</strong></p>
   
   <p>
