@@ -287,12 +287,23 @@ fn extract_pdf(path: &Path, config: &Config) -> Result<Extracted, ExtractError> 
     let mime_type = mime_guess::from_path(path).first_or_text_plain().to_string();
 
     use pdfium_render::prelude::*;
+    
+    let lib_name = if cfg!(target_os = "windows") {
+        "pdfium.dll"
+    } else if cfg!(target_os = "macos") {
+        "libpdfium.dylib"
+    } else {
+        "libpdfium.so"
+    };
+    let pdfium_path = config.model_cache_dir().join(lib_name);
+
     let pdfium = Pdfium::new(
-        Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(
-            &config.model_cache_dir()
-        ))
-        .or_else(|_| Pdfium::bind_to_system_library())
-        .map_err(|e| ExtractError::PdfDecode(format!("Pdfium bind error: {}", e)))?
+        Pdfium::bind_to_library(pdfium_path.to_string_lossy().as_ref())
+            .or_else(|_| Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(
+                &config.model_cache_dir()
+            )))
+            .or_else(|_| Pdfium::bind_to_system_library())
+            .map_err(|e| ExtractError::PdfDecode(format!("Pdfium bind error: {}", e)))?
     );
 
     let document = pdfium.load_pdf_from_file(path, None)
