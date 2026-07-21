@@ -153,9 +153,9 @@ impl ModelManager {
             return Ok(Arc::clone(model));
         }
 
-        tracing::info!("Loading MiniLM session and tokenizer...");
+        tracing::info!("Loading BGE-small-en-v1.5 session and tokenizer...");
         let models_dir = config.model_cache_dir();
-        let model_path = models_dir.join("minilm-l6-int8.onnx");
+        let model_path = models_dir.join("bge-small-en-v1.5.onnx");
         let tokenizer_path = models_dir.join("tokenizer.json");
 
         if !model_path.exists() {

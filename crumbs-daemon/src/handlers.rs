@@ -230,7 +230,7 @@ pub async fn handle_status(
         Err(_)     => -1,
     };
 
-    let minilm_ready = config.model_cache_dir().join("minilm-l6-int8.onnx").exists();
+    let minilm_ready = config.model_cache_dir().join("bge-small-en-v1.5.onnx").exists();
     let clip_ready   = config.model_cache_dir().join("clip-vision-int8.onnx").exists();
 
     let db_size = std::fs::metadata(config.db_path()).map(|m| m.len()).unwrap_or(0);

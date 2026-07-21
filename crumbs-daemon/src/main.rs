@@ -21,6 +21,7 @@ mod extractor;
 mod handlers;
 mod index;
 mod ipc;
+mod model_download;
 mod throttle;
 mod state;
 
@@ -98,18 +99,31 @@ async fn main() {
     };
 
     // -----------------------------------------------------------------------
-    // 4b. MiniLM ONNX session initialization (BLOCKING)
+    // 4b. Auto-download models if missing
+    //     Downloads models.zip from the GitHub release and extracts it to
+    //     the platform model cache directory.  Same zip the Tauri app uses.
+    // -----------------------------------------------------------------------
+    {
+        let models_dir = config.model_cache_dir();
+        info!("Checking for models in {:?}…", models_dir);
+        if let Err(e) = model_download::ensure_models(&models_dir).await {
+            warn!("Model auto-download failed: {} — search will degrade to BM25-only", e);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 4c. BGE-small ONNX session initialization (BLOCKING)
     //     We AWAIT this before starting the crawl so that the initial index
     //     run actually generates embeddings.  The IPC loop is spawned first
     //     (below) so the UI is responsive while the model loads.
     // -----------------------------------------------------------------------
     {
         let init_config = config.clone();
-        info!("Loading MiniLM ONNX model (this may take a few seconds)...");
+        info!("Loading BGE-small ONNX model (this may take a few seconds)...");
         let _ = tokio::task::spawn_blocking(move || {
             let _ = state::get_model_manager().get_minilm(&init_config);
         }).await;
-        info!("MiniLM initialization complete (model ready = {})", embed::is_minilm_ready());
+        info!("BGE-small initialization complete (model ready = {})", embed::is_minilm_ready());
     }
 
     // -----------------------------------------------------------------------

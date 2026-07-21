@@ -261,8 +261,16 @@ fn run_bm25(conn: &Connection, text: &str, limit: usize) -> Result<Vec<RawHit>, 
         return Ok(Vec::new());
     }
 
-    // Escape FTS5 special characters so user input doesn't break the query.
+    // Escape FTS5 special characters and filter stop-words so user input
+    // doesn't break the query and linguistic noise is stripped before BM25.
     let escaped = escape_fts5(text);
+
+    // If stop-word filtering removed all terms, skip the FTS leg entirely.
+    // The caller will fall through to semantic vector search.
+    if escaped.is_empty() {
+        debug!(query = %text, "all query terms filtered as stop-words — skipping BM25");
+        return Ok(Vec::new());
+    }
 
     let mut stmt = conn
         .prepare(
@@ -463,32 +471,66 @@ fn run_like_fallback(
     Ok(hits)
 }
 
-/// Escape characters that have special meaning in FTS5 MATCH expressions.
+/// Escape characters that have special meaning in FTS5 MATCH expressions
+/// and strip English stop-words to reduce linguistic noise in BM25 scoring.
 ///
-/// FTS5 treats `"`, `*`, `^`, and whitespace specially.  We wrap the whole
-/// query in double-quotes to treat it as a phrase query, escaping any
-/// embedded double-quotes.
+/// # Stop-word filtering
+///
+/// Common English function words ("a", "the", "is", …) are removed because
+/// they appear in almost every document and therefore add no discriminative
+/// power to BM25 ranking.  Tokens shorter than 2 characters are also dropped
+/// — unless the entire original query is a single short term (e.g. the
+/// programming language "R") in which case the lone token is preserved so
+/// the search is not silently discarded.
+///
+/// If filtering removes **all** terms the function returns an empty string,
+/// which causes `run_bm25` to skip the FTS leg entirely and rely on the
+/// semantic vector search path instead.
 fn escape_fts5(text: &str) -> String {
-    // 1. Convert all non-alphanumeric characters to spaces to avoid syntax errors.
+    /// Strict English stop-word list — common function words that carry
+    /// almost zero discriminative power for BM25 retrieval.
+    const STOP_WORDS: &[&str] = &[
+        "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+        "in", "on", "at", "of", "for", "with", "by", "about", "to", "from",
+        "it", "this", "that",
+    ];
+
+    // 1. Convert all non-alphanumeric characters to spaces to avoid FTS5
+    //    syntax errors, then lowercase for stop-word comparison.
     let safe_text: String = text
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { ' ' })
         .collect();
 
-    // 2. Split into terms, wrap each in quotes, and join with OR.
-    // This allows BM25 to match documents containing ANY of the words,
-    // rather than requiring EVERY word (which is the FTS5 default).
-    let terms: Vec<String> = safe_text
-        .split_whitespace()
-        .filter(|t| !t.is_empty())
-        .map(|term| format!("\"{}\"", term))
-        .collect();
+    let raw_terms: Vec<&str> = safe_text.split_whitespace().collect();
 
-    if terms.is_empty() {
+    // 2. Filter: remove stop-words and single-character tokens.
+    //    Exception: if the entire query is a single short term, keep it
+    //    so "R" or "C" still produces results.
+    let filtered: Vec<&str> = if raw_terms.len() == 1 {
+        // Single-term query — keep it regardless of length / stop-word status
+        // so the user always gets *something* from BM25.
+        raw_terms
+    } else {
+        raw_terms
+            .into_iter()
+            .filter(|t| {
+                let lower = t.to_lowercase();
+                lower.len() >= 2 && !STOP_WORDS.contains(&lower.as_str())
+            })
+            .collect()
+    };
+
+    if filtered.is_empty() {
         return String::new();
     }
 
-    terms.join(" OR ")
+    // 3. Wrap each surviving term in quotes and join with OR.
+    filtered
+        .iter()
+        .map(|term| format!("\"{}\"", term))
+        .collect::<Vec<_>>()
+        .join(" OR ")
 }
 
 // ---------------------------------------------------------------------------
@@ -527,5 +569,26 @@ mod tests {
     fn test_escape_fts5_plain() {
         let escaped = escape_fts5("rust async");
         assert_eq!(escaped, r#""rust" OR "async""#);
+    }
+
+    #[test]
+    fn test_escape_fts5_stop_words_stripped() {
+        // "a boy holding a drink" → stop-words "a" removed, short tokens dropped
+        let escaped = escape_fts5("a boy holding a drink");
+        assert_eq!(escaped, r#""boy" OR "holding" OR "drink""#);
+    }
+
+    #[test]
+    fn test_escape_fts5_all_stop_words_returns_empty() {
+        // All terms are stop-words → returns empty so BM25 is skipped.
+        let escaped = escape_fts5("the a");
+        assert_eq!(escaped, "");
+    }
+
+    #[test]
+    fn test_escape_fts5_single_short_term_preserved() {
+        // A lone single-character query should be kept (edge case: "R").
+        let escaped = escape_fts5("R");
+        assert_eq!(escaped, r#""R""#);
     }
 }

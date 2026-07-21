@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """
-download_models.py — Download INT8-quantized ONNX models for Crumbs.
+download_models.py — Download ONNX models for Crumbs.
 
-Downloads three files from the Xenova namespace on HuggingFace into:
+Downloads the following models:
+  - BAAI/bge-small-en-v1.5 (text embeddings, 384-dim)
+  - CLIP ViT-B/32 INT8 (image embeddings, 512-dim)
+  - PDFium binaries (PDF extraction)
+  - OCRS models (OCR text detection/recognition)
+
+Files are placed into:
   - ./models/  (project root, for development convenience)
-  - <platform data dir>/crumbs/models/  (runtime location the daemon reads)
+  - <platform data dir>/com.crumbs.app/models/  (runtime location the daemon reads)
 
 Usage:
     python3 download_models.py
@@ -25,16 +31,16 @@ import zipfile
 
 DOWNLOADS = [
     {
-        "url":      "https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/tokenizer.json",
+        "url":      "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/tokenizer.json",
         "filename": "tokenizer.json",
-        "desc":     "MiniLM tokenizer",
-        "size_hint": "~0.2 MB",
+        "desc":     "BGE-small-en-v1.5 tokenizer",
+        "size_hint": "~0.7 MB",
     },
     {
-        "url":      "https://huggingface.co/Xenova/all-MiniLM-L6-v2/resolve/main/onnx/model_quantized.onnx",
-        "filename": "minilm-l6-int8.onnx",
-        "desc":     "MiniLM-L6 INT8 text encoder",
-        "size_hint": "~23 MB",
+        "url":      "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/onnx/model.onnx",
+        "filename": "bge-small-en-v1.5.onnx",
+        "desc":     "BGE-small-en-v1.5 text encoder (384-dim)",
+        "size_hint": "~127 MB",
     },
     {
         "url":      "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx/vision_model_quantized.onnx",
@@ -101,7 +107,7 @@ def _get_runtime_dir() -> str:
         # Linux: XDG_DATA_HOME or ~/.local/share
         base = os.environ.get("XDG_DATA_HOME", os.path.join(os.path.expanduser("~"), ".local", "share"))
 
-    return os.path.join(base, "crumbs", "models")
+    return os.path.join(base, "com.crumbs.app", "models")
 
 # ---------------------------------------------------------------------------
 # Destination directories

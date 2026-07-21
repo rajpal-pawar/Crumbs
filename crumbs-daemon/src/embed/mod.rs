@@ -2,12 +2,12 @@
 //!
 //! # RAM budget strategy (i7-6500U, 8 GB)
 //!
-//! Loading both MiniLM (≈ 90 MB) and CLIP (≈ 350 MB) simultaneously would
-//! consume ~440 MB just for model weights.  We stay under 1 GB by strictly
+//! Loading both BGE-small (≈ 80 MB) and CLIP (≈ 350 MB) simultaneously would
+//! consume ~430 MB just for model weights.  We stay under 1 GB by strictly
 //! sequential lazy loading:
 //!
 //! ```text
-//!  embed_text_batch(texts, config)   ← load tokenizer → open MiniLM → infer → drop
+//!  embed_text_batch(texts, config)   ← load tokenizer → open BGE-small → infer → drop
 //!  embed_image_batch(images, config) ← open CLIP → infer → drop
 //! ```
 //!
@@ -22,21 +22,21 @@
 //! # Model + tokenizer paths
 //!
 //! All files live in `<data_dir>/models/`:
-//! | File                      | Purpose                        |
-//! |---------------------------|--------------------------------|
-//! | `minilm-l6-int8.onnx`     | MiniLM sentence encoder        |
-//! | `tokenizer.json`          | HuggingFace WordPiece tokenizer|
-//! | `clip-vit-b32-int8.onnx`  | CLIP visual encoder            |
+//! | File                          | Purpose                                |
+//! |-------------------------------|----------------------------------------|
+//! | `bge-small-en-v1.5.onnx`      | BGE-small-en-v1.5 sentence encoder     |
+//! | `tokenizer.json`              | HuggingFace WordPiece tokenizer        |
+//! | `clip-vit-b32-int8.onnx`      | CLIP visual encoder                    |
 //!
 //! If any required file is absent the function returns
 //! `Err(EmbedError::ModelNotFound)` so the caller can degrade gracefully.
 //!
 //! # Input / output shapes
 //!
-//! | Model   | Input                              | Output shape   |
-//! |---------|------------------------------------|----------------|
-//! | MiniLM  | `input_ids [1, ≤512]` i64          | `[1, seq, 384]`|
-//! | CLIP    | `pixel_values [1, 3, 224, 224]` f32| `[1, 512]` f32 |
+//! | Model      | Input                              | Output shape   |
+//! |------------|------------------------------------|----------------|
+//! | BGE-small  | `input_ids [1, ≤512]` i64          | `[1, seq, 384]`|
+//! | CLIP       | `pixel_values [1, 3, 224, 224]` f32| `[1, 512]` f32 |
 
 use std::path::PathBuf;
 
@@ -62,9 +62,10 @@ fn l2_normalize(vec: &mut [f32]) {
     }
 }
 
-/// INT8-quantized MiniLM from Xenova/all-MiniLM-L6-v2.
-/// Reduces model RAM from ~90 MB → ~23 MB.
-const MINILM_FILENAME:    &str = "minilm-l6-int8.onnx";
+/// BAAI/bge-small-en-v1.5 sentence encoder.
+/// 384-dim output, same as MiniLM-L6-v2 — drop-in replacement with
+/// better retrieval quality on MTEB benchmarks.
+const BGE_FILENAME:       &str = "bge-small-en-v1.5.onnx";
 const TOKENIZER_FILENAME: &str = "tokenizer.json";
 /// INT8-quantized CLIP visual encoder from Xenova/clip-vit-base-patch32.
 /// Reduces model RAM from ~350 MB → ~87 MB.
@@ -72,10 +73,9 @@ const CLIP_FILENAME: &str = "clip-vision-int8.onnx";
 const CLIP_TEXT_FILENAME: &str = "clip-text-int8.onnx";
 const CLIP_TOKENIZER_FILENAME: &str = "clip-tokenizer.json";
 
-/// Maximum token sequence length fed to MiniLM.
-/// MiniLM-L6-v2 supports up to 512, but 128 covers most short documents
-/// and halves the tensor allocation.
-const MINILM_SEQ_LEN: usize = 512;
+/// Maximum token sequence length fed to BGE-small-en-v1.5.
+/// The model supports up to 512 tokens.
+const BGE_SEQ_LEN: usize = 512;
 
 /// CLIP ViT-B/32 expected spatial resolution.
 const CLIP_IMAGE_SIZE: u32 = 224;
@@ -112,7 +112,7 @@ pub fn embed_text_batch(
                 .encode(chunk.as_str(), true)
                 .map_err(|e| EmbedError::Tokenizer(e.to_string()))?;
 
-            let (ids, mask, type_ids) = encode_to_tensors(&encoding, MINILM_SEQ_LEN)?;
+            let (ids, mask, type_ids) = encode_to_tensors(&encoding, BGE_SEQ_LEN)?;
 
             let inputs = ort::inputs![
                 "input_ids"      => ort::value::Tensor::from_array(ids).map_err(|e| EmbedError::Ort(e.to_string()))?,

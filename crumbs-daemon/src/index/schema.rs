@@ -16,11 +16,10 @@
 //! reconstruct snippets without duplicating the text in the FTS index itself.
 //!
 //! ## `embeddings` (sqlite-vec vector index)
-//! A `vec0` virtual table.  The embedding column is declared as bare `FLOAT`
-//! (no dimension suffix) so the table can store both 384-dim text embeddings
-//! (e.g. all-MiniLM-L6-v2) and 512-dim image embeddings (e.g. CLIP) in the
-//! same column.  Dimension validation happens at the application layer in
-//! `writer.rs`.
+//! A `vec0` virtual table.  The embedding column is declared as `float[384]`
+//! for 384-dim text embeddings (BAAI/bge-small-en-v1.5) and a separate
+//! `embeddings_images` table stores 512-dim CLIP image embeddings.
+//! Dimension validation happens at the application layer in `writer.rs`.
 //!
 //! ## `schema_version` (migration sentinel)
 //! A single-row table holding the current schema version so future migrations
@@ -32,7 +31,11 @@ use tracing::{debug, warn};
 use crate::index::DbError;
 
 /// Current schema version.  Increment this when making breaking DDL changes.
-pub const SCHEMA_VERSION: i64 = 1;
+///
+/// v2: Migrated text embeddings from MiniLM-L6-v2 → BAAI/bge-small-en-v1.5.
+///     All existing embeddings are mathematically incompatible and must be
+///     regenerated, so the migration drops all data tables.
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// Apply all DDL statements to `conn`.
 ///
@@ -43,6 +46,45 @@ pub const SCHEMA_VERSION: i64 = 1;
 /// Propagates [`DbError::Rusqlite`] for any SQL failure.
 pub fn apply_schema(conn: &Connection) -> Result<(), DbError> {
     debug!("applying schema (version {})", SCHEMA_VERSION);
+
+    // -----------------------------------------------------------------
+    // Phase 0: Migration guard — hard reset if schema is older than v2.
+    //
+    // v2 swapped the text embedding model (MiniLM → BGE-small).  The
+    // 384-dim vectors produced by BGE live in a different semantic space
+    // so every existing embedding must be discarded and regenerated.
+    // We also drop `documents` and `docs_fts` to force a clean crawl.
+    // -----------------------------------------------------------------
+    let needs_reset = match conn.query_row(
+        "SELECT version FROM schema_version WHERE id = 1",
+        [],
+        |row| row.get::<_, i64>(0),
+    ) {
+        Ok(v) => v < SCHEMA_VERSION,
+        // Table doesn't exist yet (fresh database) — no reset needed,
+        // the CREATE IF NOT EXISTS statements will handle it.
+        Err(_) => false,
+    };
+
+    if needs_reset {
+        warn!("schema version < {} detected — dropping all data tables for clean re-index", SCHEMA_VERSION);
+        // Drop triggers first (they reference `documents`).
+        let _ = conn.execute_batch("
+            DROP TRIGGER IF EXISTS documents_ai;
+            DROP TRIGGER IF EXISTS documents_ad;
+            DROP TRIGGER IF EXISTS documents_au;
+        ");
+        // Drop FTS5 virtual table, then the backing view.
+        let _ = conn.execute_batch("DROP TABLE IF EXISTS docs_fts;");
+        let _ = conn.execute_batch("DROP VIEW IF EXISTS documents_view;");
+        // Drop vec0 virtual tables (outside transaction — same reason as
+        // creation: vec0 manages its own shadow tables).
+        let _ = conn.execute_batch("DROP TABLE IF EXISTS embeddings;");
+        let _ = conn.execute_batch("DROP TABLE IF EXISTS embeddings_images;");
+        // Drop the main documents table last.
+        let _ = conn.execute_batch("DROP TABLE IF EXISTS documents;");
+        debug!("old data tables dropped — will recreate from scratch");
+    }
 
     // -----------------------------------------------------------------
     // Phase 1: Regular tables + FTS5 inside an explicit transaction.
@@ -195,7 +237,7 @@ END;
 
 const VEC0_SCHEMA_SQL: &str = "
 -- We use `float[384]` as sqlite-vec strictly requires the exact array dimension.
--- This supports 384-dim f32 text embeddings (all-MiniLM-L6-v2, 1536 bytes).
+-- This supports 384-dim f32 text embeddings (BAAI/bge-small-en-v1.5, 1536 bytes).
 -- The `doc_id` auxiliary column lets us JOIN back to `documents` after ANN
 -- search without a separate lookup.
 --
