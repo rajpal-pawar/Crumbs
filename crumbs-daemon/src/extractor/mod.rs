@@ -37,37 +37,6 @@ use tracing::debug;
 use crate::config::Config;
 
 // ---------------------------------------------------------------------------
-// Stdout Silencer for rogue println! in dependencies
-// ---------------------------------------------------------------------------
-struct StdoutSilencer {
-    #[cfg(target_os = "linux")]
-    saved_stdout: i32,
-}
-
-impl StdoutSilencer {
-    fn new() -> Self {
-        #[cfg(target_os = "linux")]
-        unsafe {
-            let saved = libc::dup(libc::STDOUT_FILENO);
-            libc::dup2(libc::STDERR_FILENO, libc::STDOUT_FILENO);
-            Self { saved_stdout: saved }
-        }
-        #[cfg(not(target_os = "linux"))]
-        Self {}
-    }
-}
-
-impl Drop for StdoutSilencer {
-    fn drop(&mut self) {
-        #[cfg(target_os = "linux")]
-        unsafe {
-            libc::dup2(self.saved_stdout, libc::STDOUT_FILENO);
-            libc::close(self.saved_stdout);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
 
@@ -114,7 +83,7 @@ impl Extracted {
 // Extension lists
 // ---------------------------------------------------------------------------
 
-/// Extensions we treat as plain text and feed to MiniLM.
+/// Extensions we treat as plain text and feed to BGE.
 pub const TEXT_EXTENSIONS: &[&str] = &[
     "txt", "md", "markdown", "rst", "adoc",
     "rs",  "py", "js",  "ts",  "jsx", "tsx",
@@ -130,8 +99,7 @@ pub const IMAGE_EXTENSIONS: &[&str] = &[
     "jpg", "jpeg", "png", "webp", "bmp", "gif", "tiff", "tif",
 ];
 
-// Sniff buffer: check the first N bytes for null bytes.
-const SNIFF_BYTES: usize = 8 * 1024; // 8 KB
+
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -297,14 +265,16 @@ fn extract_pdf(path: &Path, config: &Config) -> Result<Extracted, ExtractError> 
     };
     let pdfium_path = config.model_cache_dir().join(lib_name);
 
-    let pdfium = Pdfium::new(
-        Pdfium::bind_to_library(pdfium_path.to_string_lossy().as_ref())
-            .or_else(|_| Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(
-                &config.model_cache_dir()
-            )))
-            .or_else(|_| Pdfium::bind_to_system_library())
-            .map_err(|e| ExtractError::PdfDecode(format!("Pdfium bind error: {}", e)))?
-    );
+    let pdfium = match Pdfium::bind_to_library(pdfium_path.to_string_lossy().as_ref()) {
+        Ok(bind) => Pdfium::new(bind),
+        Err(e1) => {
+            tracing::warn!("Failed to bind to absolute pdfium path: {:?}", e1);
+            match Pdfium::bind_to_system_library() {
+                Ok(bind) => Pdfium::new(bind),
+                Err(e2) => return Err(ExtractError::PdfDecode(format!("Pdfium bind error. Absolute: {:?}, System: {:?}", e1, e2))),
+            }
+        }
+    };
 
     let document = pdfium.load_pdf_from_file(path, None)
         .map_err(|e| ExtractError::PdfDecode(format!("Pdfium load error: {}", e)))?;
@@ -328,21 +298,25 @@ fn extract_pdf(path: &Path, config: &Config) -> Result<Extracted, ExtractError> 
                     let detection_model_path = config.model_cache_dir().join("text-detection.rten");
                     let recognition_model_path = config.model_cache_dir().join("text-recognition.rten");
 
-                    let detection_model = rten::Model::load_file(&detection_model_path)
-                        .map_err(|e| ExtractError::PdfDecode(format!("Failed to load detection model: {}", e)))?;
-                    let recognition_model = rten::Model::load_file(&recognition_model_path)
-                        .map_err(|e| ExtractError::PdfDecode(format!("Failed to load recognition model: {}", e)))?;
+                    let detection_model = rten::Model::load_file(&detection_model_path);
+                    let recognition_model = rten::Model::load_file(&recognition_model_path);
 
-                    let engine = ocrs::OcrEngine::new(ocrs::OcrEngineParams {
-                        detection_model: Some(detection_model),
-                        recognition_model: Some(recognition_model),
-                        ..Default::default()
-                    }).map_err(|e| ExtractError::PdfDecode(format!("Failed to init OCR engine: {}", e)))?;
-
-                    ocr_engine = Some(engine);
+                    match (detection_model, recognition_model) {
+                        (Ok(det), Ok(rec)) => {
+                            match ocrs::OcrEngine::new(ocrs::OcrEngineParams {
+                                detection_model: Some(det),
+                                recognition_model: Some(rec),
+                                ..Default::default()
+                            }) {
+                                Ok(engine) => ocr_engine = Some(engine),
+                                Err(e) => tracing::warn!("Failed to init OCR engine: {}", e),
+                            }
+                        }
+                        _ => tracing::warn!("Failed to load OCR models, skipping OCR"),
+                    }
                 }
 
-                // Render page and run through Neural Networks with explicit error tracking
+                if let Some(_engine) = ocr_engine.as_ref() {
                 match page.render_with_config(&render_config) {
                     Ok(bitmap) => {
                         let dynamic_image = bitmap.as_image();
@@ -359,9 +333,10 @@ fn extract_pdf(path: &Path, config: &Config) -> Result<Extracted, ExtractError> 
                                                     Ok(lines) => {
                                                         let mut extracted_words = 0;
                                                         for line in lines.iter().flatten() {
-                                                            page_text.push_str(&line.to_string());
+                                                            let line_str = line.to_string();
+                                                            page_text.push_str(&line_str);
                                                             page_text.push('\n');
-                                                            extracted_words += 1;
+                                                            extracted_words += line_str.split_whitespace().count();
                                                         }
                                                         tracing::info!(path = %path.display(), page = i, words = extracted_words, "OCR successful");
                                                     }
@@ -379,6 +354,7 @@ fn extract_pdf(path: &Path, config: &Config) -> Result<Extracted, ExtractError> 
                     }
                     Err(e) => tracing::warn!("PDFium render failed: {:?}", e),
                 }
+                } // End if let Some(engine)
                 pages_ocred += 1;
             }
         }
@@ -431,18 +407,6 @@ fn extract_image(path: &Path) -> Result<Extracted, ExtractError> {
     );
 
     Ok(Extracted::Image { image, checksum, mime_type })
-}
-
-// ---------------------------------------------------------------------------
-// Binary sniff
-// ---------------------------------------------------------------------------
-
-fn is_binary(path: &Path) -> Result<bool, ExtractError> {
-    let mut file = File::open(path).map_err(ExtractError::Io)?;
-    let mut buf = vec![0u8; SNIFF_BYTES];
-    let n = file.read(&mut buf).map_err(ExtractError::Io)?;
-    // Presence of a null byte is a strong indicator of binary content.
-    Ok(buf[..n].contains(&0u8))
 }
 
 // ---------------------------------------------------------------------------

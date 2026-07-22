@@ -319,6 +319,9 @@ pub async fn select_folders_dialog(
 ///   Linux   : `$XDG_DATA_HOME/com.crumbs.app/models/`  (fallback: `~/.local/share/…`)
 ///   macOS   : `~/Library/Application Support/com.crumbs.app/models/`
 fn app_models_dir() -> Result<std::path::PathBuf, String> {
+    if let Ok(crumbs_data_dir) = std::env::var("CRUMBS_DATA_DIR") {
+        return Ok(std::path::PathBuf::from(crumbs_data_dir).join("models"));
+    }
     // `dirs` is already available transitively through Tauri; we use its own
     // data_local_dir() which maps correctly on every platform.
     let base = dirs::data_local_dir()
@@ -326,9 +329,23 @@ fn app_models_dir() -> Result<std::path::PathBuf, String> {
     Ok(base.join("com.crumbs.app").join("models"))
 }
 
+static IS_DOWNLOADING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[tauri::command]
 pub async fn download_models(url: String, app: AppHandle) -> Result<String, String> {
-    match do_download_models(url, &app).await {
+    if IS_DOWNLOADING.compare_exchange(
+        false, 
+        true, 
+        std::sync::atomic::Ordering::SeqCst, 
+        std::sync::atomic::Ordering::SeqCst
+    ).is_err() {
+        return Ok("already downloading".to_string());
+    }
+
+    let result = do_download_models(url, &app).await;
+    IS_DOWNLOADING.store(false, std::sync::atomic::Ordering::SeqCst);
+
+    match result {
         Ok(_) => Ok("done".to_string()),
         Err(e) => {
             use tauri::Emitter;
@@ -350,7 +367,7 @@ async fn do_download_models(url: String, app: &AppHandle) -> Result<(), String> 
         .await
         .map_err(|e| format!("Cannot create models directory: {e}"))?;
 
-    let tmp_zip = models_dir.with_file_name("models.zip.tmp");
+    let tmp_zip = models_dir.with_file_name("models-tauri.zip.tmp");
 
     let client = reqwest::Client::builder()
         .user_agent("Crumbs/1.0")
@@ -384,7 +401,7 @@ async fn do_download_models(url: String, app: &AppHandle) -> Result<(), String> 
         downloaded += chunk.len() as u64;
 
         if let Some(total) = total_bytes {
-            let pct = (downloaded as f32 / total as f32) * 100.0;
+            let pct = if total > 0 { (downloaded as f32 / total as f32) * 100.0 } else { 0.0 };
             if pct - last_pct >= 1.0 {
                 last_pct = pct;
                 let _ = app.emit("download-progress", pct);
@@ -453,16 +470,19 @@ pub fn check_models_exist() -> Result<bool, String> {
     if !dir.exists() {
         return Ok(false);
     }
-    let mut has_files = false;
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            if entry.path().is_file() {
-                has_files = true;
-                break;
-            }
+    let required_files = [
+        "bge-small-en-v1.5.onnx",
+        "tokenizer.json",
+        "clip-vision-int8.onnx",
+        "clip-text-int8.onnx",
+        "clip-tokenizer.json",
+    ];
+    for f in required_files {
+        if !dir.join(f).exists() {
+            return Ok(false);
         }
     }
-    Ok(has_files)
+    Ok(true)
 }
 
 // ---------------------------------------------------------------------------

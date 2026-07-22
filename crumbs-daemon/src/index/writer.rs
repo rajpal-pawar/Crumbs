@@ -184,13 +184,6 @@ pub fn delete(tx: &Transaction, path: &Path) -> Result<bool, DbError> {
         None => return Ok(false),
     };
 
-    // Clean FTS.
-    tx.execute(
-        "INSERT INTO docs_fts(docs_fts, rowid, title, body)
-         VALUES ('delete', ?1, '', '')",
-        rusqlite::params![doc_id],
-    )
-    .map_err(DbError::Rusqlite)?;
 
     // Clean embeddings.
     tx.execute(

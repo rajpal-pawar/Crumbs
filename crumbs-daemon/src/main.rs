@@ -112,18 +112,29 @@ async fn main() {
     }
 
     // -----------------------------------------------------------------------
+    // 6. IPC run-loop and Crawler
+    // -----------------------------------------------------------------------
+    info!("entering IPC run-loop");
+    let crawl_config = Arc::new(config.clone());
+    let crawl_db = Arc::clone(&db);
+
+    let ipc_handle = tokio::spawn(async move {
+        if let Err(e) = ipc::run_loop(config, db).await {
+            error!(error = %e, "IPC run-loop terminated with error");
+            std::process::exit(1);
+        }
+    });
+
+    // -----------------------------------------------------------------------
     // 4c. BGE-small ONNX session initialization (BLOCKING)
-    //     We AWAIT this before starting the crawl so that the initial index
-    //     run actually generates embeddings.  The IPC loop is spawned first
-    //     (below) so the UI is responsive while the model loads.
     // -----------------------------------------------------------------------
     {
-        let init_config = config.clone();
+        let init_config = crawl_config.clone();
         info!("Loading BGE-small ONNX model (this may take a few seconds)...");
         let _ = tokio::task::spawn_blocking(move || {
-            let _ = state::get_model_manager().get_minilm(&init_config);
+            let _ = state::get_model_manager().get_bge(&init_config);
         }).await;
-        info!("BGE-small initialization complete (model ready = {})", embed::is_minilm_ready());
+        info!("BGE-small initialization complete (model ready = {})", embed::is_bge_ready());
     }
 
     // -----------------------------------------------------------------------
@@ -137,20 +148,6 @@ async fn main() {
     } else {
         info!("process throttling applied successfully");
     }
-
-    // -----------------------------------------------------------------------
-    // 6. IPC run-loop and Crawler
-    // -----------------------------------------------------------------------
-    info!("entering IPC run-loop");
-    let crawl_config = Arc::new(config.clone());
-    let crawl_db = Arc::clone(&db);
-
-    let ipc_handle = tokio::spawn(async move {
-        if let Err(e) = ipc::run_loop(config, db).await {
-            error!(error = %e, "IPC run-loop terminated with error");
-            std::process::exit(1);
-        }
-    });
 
     // Spawn the directory crawler *after* the IPC loop is already running,
     // but ONLY if the user has completed onboarding and selected folders.

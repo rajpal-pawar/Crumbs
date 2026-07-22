@@ -26,7 +26,7 @@
 //!
 //! # Memory budget
 //! - Idle:  < 150 MB (no sessions loaded).
-//! - Active text batch:  + ~90 MB (MiniLM weights).
+//! - Active text batch:  + ~90 MB (BGE weights).
 //! - Active image batch: + ~350 MB (CLIP weights).
 //! Sessions are always dropped before the next is opened, so peak RAM is
 //! max(90, 350) MB above idle, well within the 1 GB daemon budget.
@@ -35,6 +35,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use image::DynamicImage;
+use rusqlite::OptionalExtension;
 use serde_json::json;
 use tracing::{debug, info, warn};
 
@@ -97,9 +98,9 @@ pub fn handle_update_config(
 /// Params: `{ "query": "<text>", "limit": <int> }`.
 ///
 /// Pipeline:
-/// 1. Lazily embed the query text with MiniLM (open session, infer, drop).
+/// 1. Lazily embed the query text with BGE (open session, infer, drop).
 /// 2. Run hybrid BM25 + vector search via RRF.
-/// 3. Fall back to BM25-only if MiniLM model is absent.
+/// 3. Fall back to BM25-only if BGE model is absent.
 pub async fn handle_search(
     req: Request,
     config: &Arc<Config>,
@@ -142,7 +143,7 @@ pub async fn handle_search(
                         None
                     }
                     Err(embed::EmbedError::ModelNotFound(_)) => {
-                        debug!("MiniLM model absent — falling back to BM25-only search");
+                        debug!("BGE model absent — falling back to BM25-only search");
                         None
                     }
                     Err(e) => {
@@ -230,8 +231,9 @@ pub async fn handle_status(
         Err(_)     => -1,
     };
 
-    let minilm_ready = config.model_cache_dir().join("bge-small-en-v1.5.onnx").exists();
-    let clip_ready   = config.model_cache_dir().join("clip-vision-int8.onnx").exists();
+    let bge_ready = config.model_cache_dir().join(crate::embed::BGE_FILENAME).exists()
+        && config.model_cache_dir().join(crate::embed::TOKENIZER_FILENAME).exists();
+    let clip_ready   = config.model_cache_dir().join(crate::embed::CLIP_FILENAME).exists();
 
     let db_size = std::fs::metadata(config.db_path()).map(|m| m.len()).unwrap_or(0);
     let onnx_memory = crate::state::get_model_manager().get_onnx_memory_footprint();
@@ -270,7 +272,7 @@ pub async fn handle_status(
             "embed_batch_size": config.embed_batch_size,
             "onnx_threads":     config.onnx_intra_threads,
             "models": {
-                "minilm_ready": minilm_ready,
+                "bge_ready": bge_ready,
                 "clip_ready":   clip_ready,
             },
             "doc_count":        doc_count,
@@ -495,6 +497,45 @@ fn run_reindex_pipeline_internal_impl(
                 }
             };
 
+            // ------------------------------------------------------------------
+            // INCREMENTAL SKIP — fast path: compare mtime + size against the
+            // existing DB record before reading a single byte of the file.
+            // Only extract (and re-embed) if something actually changed.
+            // ------------------------------------------------------------------
+            let mtime_secs = meta.modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+
+            // Cheap SELECT — uses the path index (no table scan).
+            let existing_record = db_clone.with_read_conn(|conn| {
+                conn.query_row(
+                    "SELECT checksum, size_bytes, updated_at FROM documents WHERE path = ?1",
+                    rusqlite::params![path.to_string_lossy()],
+                    |row| Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    )),
+                )
+                .optional()
+                .map_err(crate::index::DbError::Rusqlite)
+            });
+
+            // If the file is already indexed AND mtime + size match → nothing changed.
+            let stored_checksum: Option<String> = match existing_record {
+                Ok(Some((ref chk, stored_size, updated_at)))
+                    if stored_size == meta.len() as i64 && mtime_secs <= updated_at =>
+                {
+                    debug!(path = %path.display(), "skipping unchanged file (mtime+size match)");
+                    stats.skipped += 1;
+                    continue;
+                }
+                Ok(Some((ref chk, _, _))) => Some(chk.clone()),
+                _ => None,
+            };
+
             let is_semantic = {
                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
                 crate::extractor::TEXT_EXTENSIONS.contains(&ext.as_str()) || crate::extractor::IMAGE_EXTENSIONS.contains(&ext.as_str())
@@ -517,6 +558,7 @@ fn run_reindex_pipeline_internal_impl(
                 }
                 Err(e) => {
                     tracing::warn!(path = %path.display(), error = ?e, "Extraction failed — falling back to filename indexing");
+                    stats.failed_files.push((path.display().to_string(), format!("extraction error: {:?}", e)));
                     let filename = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     let mime_type = mime_guess::from_path(&path).first_or_text_plain().to_string();
                     extractor::Extracted::Text {
@@ -531,6 +573,16 @@ fn run_reindex_pipeline_internal_impl(
             let checksum = extracted.checksum().to_owned();
             let mime_type = extracted.mime_type().to_owned();
             let size_bytes = meta.len();
+
+            // Secondary guard: mtime/size changed but content is identical (e.g. a
+            // touch or copy-over with same bytes).  Skip embedding to avoid bloat.
+            if let Some(ref prev_checksum) = stored_checksum {
+                if *prev_checksum == checksum && checksum != "fallback_hash" {
+                    debug!(path = %path.display(), "skipping unchanged file (checksum match)");
+                    stats.skipped += 1;
+                    continue;
+                }
+            }
 
             match extracted {
                 Extracted::Text { chunks, .. } => {

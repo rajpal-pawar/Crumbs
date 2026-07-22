@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "identifier": "com.crumbs.app",
   "build": {
-    "beforeDevCommand": "npm --prefix ../ui run dev",
+    "beforeDevCommand": "bash ../scripts/build-daemon.sh && npm --prefix ../ui run dev",
     "beforeBuildCommand": "npm --prefix ../ui run build",
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173"

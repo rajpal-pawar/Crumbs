@@ -110,20 +110,12 @@ pub fn apply_schema(conn: &Connection) -> Result<(), DbError> {
         return Err(DbError::Rusqlite(e));
     }
 
-    conn.execute_batch("COMMIT;").map_err(DbError::Rusqlite)?;
-
-    // -----------------------------------------------------------------
-    // Phase 2: vec0 virtual table — created OUTSIDE the transaction.
-    //
-    // sqlite-vec's vec0 module creates shadow tables internally.
-    // Creating it inside an explicit transaction corrupts the WAL,
-    // causing "database disk image is malformed" on subsequent writes.
-    // -----------------------------------------------------------------
     if let Err(e) = conn.execute_batch(VEC0_SCHEMA_SQL) {
-        warn!(error = %e, "failed to create vec0 embeddings table — vector search disabled");
-        // Non-fatal: the rest of the schema is intact, and search can
-        // still work via BM25 + LIKE fallback.
+        let _ = conn.execute_batch("ROLLBACK;");
+        return Err(DbError::Rusqlite(e));
     }
+
+    conn.execute_batch("COMMIT;").map_err(DbError::Rusqlite)?;
 
     // Force a WAL checkpoint so the schema is flushed to the main DB file.
     // This prevents "disk image is malformed" errors from un-checkpointed

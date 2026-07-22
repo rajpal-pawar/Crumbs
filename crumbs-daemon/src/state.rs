@@ -5,7 +5,7 @@ use tokenizers::Tokenizer;
 use crate::config::Config;
 use crate::embed::EmbedError;
 
-pub struct MiniLMModel {
+pub struct BgeModel {
     pub session: Mutex<Session>,
     pub tokenizer: Tokenizer,
 }
@@ -16,7 +16,7 @@ pub struct CLIPTextModel {
 }
 
 pub struct ModelManager {
-    minilm: RwLock<Option<Arc<MiniLMModel>>>,
+    bge: RwLock<Option<Arc<BgeModel>>>,
     clip_vision: RwLock<Option<Arc<Mutex<Session>>>>,
     clip_text: RwLock<Option<Arc<CLIPTextModel>>>,
     
@@ -37,7 +37,7 @@ pub fn get_model_manager() -> &'static ModelManager {
 impl ModelManager {
     pub fn new() -> Self {
         Self {
-            minilm: RwLock::new(None),
+            bge: RwLock::new(None),
             clip_vision: RwLock::new(None),
             clip_text: RwLock::new(None),
             active_search_count: AtomicUsize::new(0),
@@ -84,7 +84,7 @@ impl ModelManager {
 
     pub fn get_onnx_memory_footprint(&self) -> u64 {
         let mut onnx_memory = 0;
-        if let Ok(lock) = self.minilm.read() {
+        if let Ok(lock) = self.bge.read() {
             if lock.is_some() {
                 onnx_memory += 90 * 1024 * 1024;
             }
@@ -115,8 +115,8 @@ impl ModelManager {
         self.active_search_count.load(Ordering::SeqCst) > 0
     }
 
-    pub fn is_minilm_ready(&self) -> bool {
-        if let Ok(lock) = self.minilm.read() {
+    pub fn is_bge_ready(&self) -> bool {
+        if let Ok(lock) = self.bge.read() {
             lock.is_some()
         } else {
             false
@@ -129,7 +129,7 @@ impl ModelManager {
         
         if !search_active && !indexer_active {
             tracing::info!("Both search and indexer are idle. Freeing ONNX model weights from RAM.");
-            if let Ok(mut lock) = self.minilm.write() {
+            if let Ok(mut lock) = self.bge.write() {
                 *lock = None;
             }
             if let Ok(mut lock) = self.clip_vision.write() {
@@ -141,22 +141,22 @@ impl ModelManager {
         }
     }
 
-    pub fn get_minilm(&self, config: &Config) -> Result<Arc<MiniLMModel>, EmbedError> {
+    pub fn get_bge(&self, config: &Config) -> Result<Arc<BgeModel>, EmbedError> {
         {
-            let lock = self.minilm.read().map_err(|e| EmbedError::Ort(format!("RwLock read error: {}", e)))?;
+            let lock = self.bge.read().map_err(|e| EmbedError::Ort(format!("RwLock read error: {}", e)))?;
             if let Some(ref model) = *lock {
                 return Ok(Arc::clone(model));
             }
         }
-        let mut lock = self.minilm.write().map_err(|e| EmbedError::Ort(format!("RwLock write error: {}", e)))?;
+        let mut lock = self.bge.write().map_err(|e| EmbedError::Ort(format!("RwLock write error: {}", e)))?;
         if let Some(ref model) = *lock {
             return Ok(Arc::clone(model));
         }
 
         tracing::info!("Loading BGE-small-en-v1.5 session and tokenizer...");
         let models_dir = config.model_cache_dir();
-        let model_path = models_dir.join("bge-small-en-v1.5.onnx");
-        let tokenizer_path = models_dir.join("tokenizer.json");
+        let model_path = models_dir.join(crate::embed::BGE_FILENAME);
+        let tokenizer_path = models_dir.join(crate::embed::TOKENIZER_FILENAME);
 
         if !model_path.exists() {
             return Err(EmbedError::ModelNotFound(model_path));
@@ -177,7 +177,7 @@ impl ModelManager {
         let tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| EmbedError::Tokenizer(e.to_string()))?;
 
-        let model = Arc::new(MiniLMModel { session: Mutex::new(session), tokenizer });
+        let model = Arc::new(BgeModel { session: Mutex::new(session), tokenizer });
         *lock = Some(Arc::clone(&model));
         Ok(model)
     }
@@ -195,7 +195,7 @@ impl ModelManager {
         }
 
         tracing::info!("Loading CLIP vision session...");
-        let model_path = config.model_cache_dir().join("clip-vision-int8.onnx");
+        let model_path = config.model_cache_dir().join(crate::embed::CLIP_FILENAME);
         if !model_path.exists() {
             return Err(EmbedError::ModelNotFound(model_path));
         }
@@ -228,8 +228,8 @@ impl ModelManager {
 
         tracing::info!("Loading CLIP text session and tokenizer...");
         let models_dir = config.model_cache_dir();
-        let model_path = models_dir.join("clip-text-int8.onnx");
-        let tokenizer_path = models_dir.join("clip-tokenizer.json");
+        let model_path = models_dir.join(crate::embed::CLIP_TEXT_FILENAME);
+        let tokenizer_path = models_dir.join(crate::embed::CLIP_TOKENIZER_FILENAME);
 
         if !model_path.exists() {
             return Err(EmbedError::ModelNotFound(model_path));

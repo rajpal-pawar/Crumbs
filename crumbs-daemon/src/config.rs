@@ -44,7 +44,7 @@ pub struct Config {
     pub max_file_bytes: u64,
 
     /// Maximum bytes to read from a text file for the embedding pipeline.
-    /// Reading beyond this is wasteful: MiniLM has a 512-token context window
+    /// Reading beyond this is wasteful: BGE-small-en-v1.5 has a 512-token context window
     /// which corresponds to roughly 100 KB of prose.  Default: 128 KB.
     pub text_read_limit_bytes: usize,
 
@@ -278,7 +278,7 @@ impl Config {
         Ok(Config {
             data_dir,
             max_file_bytes: MAX_FILE_BYTES,
-            // 128 KB covers the full context window of MiniLM (512 tokens ≈
+            // 128 KB covers the full context window of BGE-small-en-v1.5 (512 tokens ≈
             // 2000 words ≈ ~12 KB, so 128 KB is generous without being wasteful).
             text_read_limit_bytes: 128 * 1024,
             // 2 intra-op threads: uses both physical cores of the i7-6500U

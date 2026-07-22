@@ -21,11 +21,11 @@ const MODELS_ZIP_URL: &str =
 /// Required model files that must be present for the daemon to function.
 /// If any of these are missing, a download is triggered.
 const REQUIRED_FILES: &[&str] = &[
-    "bge-small-en-v1.5.onnx",
-    "tokenizer.json",
-    "clip-vision-int8.onnx",
-    "clip-text-int8.onnx",
-    "clip-tokenizer.json",
+    crate::embed::BGE_FILENAME,
+    crate::embed::TOKENIZER_FILENAME,
+    crate::embed::CLIP_FILENAME,
+    crate::embed::CLIP_TEXT_FILENAME,
+    crate::embed::CLIP_TOKENIZER_FILENAME,
 ];
 
 /// Check whether all required model files exist in `models_dir`.
@@ -54,7 +54,7 @@ pub async fn ensure_models(models_dir: &Path) -> Result<(), String> {
         .await
         .map_err(|e| format!("Cannot create models directory: {e}"))?;
 
-    let tmp_zip = models_dir.with_file_name("models.zip.tmp");
+    let tmp_zip = models_dir.with_file_name("models-daemon.zip.tmp");
 
     // ------------------------------------------------------------------
     // 1. Stream-download the zip to a temp file
@@ -98,15 +98,17 @@ pub async fn ensure_models(models_dir: &Path) -> Result<(), String> {
 
         // Log progress every 10%.
         if let Some(total) = total_bytes {
-            let pct = (downloaded * 100) / total;
-            if pct >= last_pct + 10 {
-                last_pct = pct;
-                info!(
-                    "Download progress: {}% ({:.1} / {:.1} MB)",
-                    pct,
-                    downloaded as f64 / 1_048_576.0,
-                    total as f64 / 1_048_576.0
-                );
+            if total > 0 {
+                let pct = (downloaded * 100) / total;
+                if pct >= last_pct + 10 {
+                    last_pct = pct;
+                    info!(
+                        "Download progress: {}% ({:.1} / {:.1} MB)",
+                        pct,
+                        downloaded as f64 / 1_048_576.0,
+                        total as f64 / 1_048_576.0
+                    );
+                }
             }
         }
     }

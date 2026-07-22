@@ -26,7 +26,7 @@
 //! |-------------------------------|----------------------------------------|
 //! | `bge-small-en-v1.5.onnx`      | BGE-small-en-v1.5 sentence encoder     |
 //! | `tokenizer.json`              | HuggingFace WordPiece tokenizer        |
-//! | `clip-vit-b32-int8.onnx`      | CLIP visual encoder                    |
+//! | `clip-vision-int8.onnx`     | CLIP visual encoder                    |
 //!
 //! If any required file is absent the function returns
 //! `Err(EmbedError::ModelNotFound)` so the caller can degrade gracefully.
@@ -65,17 +65,17 @@ fn l2_normalize(vec: &mut [f32]) {
 /// BAAI/bge-small-en-v1.5 sentence encoder.
 /// 384-dim output, same as MiniLM-L6-v2 — drop-in replacement with
 /// better retrieval quality on MTEB benchmarks.
-const BGE_FILENAME:       &str = "bge-small-en-v1.5.onnx";
-const TOKENIZER_FILENAME: &str = "tokenizer.json";
+pub(crate) const BGE_FILENAME:       &str = "bge-small-en-v1.5.onnx";
+pub(crate) const TOKENIZER_FILENAME: &str = "tokenizer.json";
 /// INT8-quantized CLIP visual encoder from Xenova/clip-vit-base-patch32.
 /// Reduces model RAM from ~350 MB → ~87 MB.
-const CLIP_FILENAME: &str = "clip-vision-int8.onnx";
-const CLIP_TEXT_FILENAME: &str = "clip-text-int8.onnx";
-const CLIP_TOKENIZER_FILENAME: &str = "clip-tokenizer.json";
+pub(crate) const CLIP_FILENAME: &str = "clip-vision-int8.onnx";
+pub(crate) const CLIP_TEXT_FILENAME: &str = "clip-text-int8.onnx";
+pub(crate) const CLIP_TOKENIZER_FILENAME: &str = "clip-tokenizer.json";
 
 /// Maximum token sequence length fed to BGE-small-en-v1.5.
 /// The model supports up to 512 tokens.
-const BGE_SEQ_LEN: usize = 512;
+pub(crate) const BGE_SEQ_LEN: usize = 512;
 
 /// CLIP ViT-B/32 expected spatial resolution.
 const CLIP_IMAGE_SIZE: u32 = 224;
@@ -84,12 +84,12 @@ const CLIP_IMAGE_SIZE: u32 = 224;
 // Public API — Text
 // ---------------------------------------------------------------------------
 
-pub fn eagerly_init_minilm(config: &Config) {
-    let _ = crate::state::get_model_manager().get_minilm(config);
+pub fn eagerly_init_bge(config: &Config) {
+    let _ = crate::state::get_model_manager().get_bge(config);
 }
 
-pub fn is_minilm_ready() -> bool {
-    crate::state::get_model_manager().is_minilm_ready()
+pub fn is_bge_ready() -> bool {
+    crate::state::get_model_manager().is_bge_ready()
 }
 
 pub fn embed_text_batch(
@@ -100,7 +100,7 @@ pub fn embed_text_batch(
         return Ok(Vec::new());
     }
 
-    let model = crate::state::get_model_manager().get_minilm(config)?;
+    let model = crate::state::get_model_manager().get_bge(config)?;
     let mut results = Vec::with_capacity(texts.len());
 
     for (doc_idx, text) in texts.iter().enumerate() {
