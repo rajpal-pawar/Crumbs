@@ -5,6 +5,28 @@ use tokenizers::Tokenizer;
 use crate::config::Config;
 use crate::embed::EmbedError;
 
+// ---------------------------------------------------------------------------
+// RAII guard — ensures `indexer_count` is always decremented, even on panic.
+// ---------------------------------------------------------------------------
+
+/// Increment the indexer counter on creation; decrement (and maybe cleanup)
+/// when the guard is dropped — including unwinding from a panic.
+pub struct IndexerGuard;
+
+impl IndexerGuard {
+    /// Create a new guard, incrementing the active-indexer counter.
+    pub fn new() -> Self {
+        get_model_manager().increment_indexer();
+        Self
+    }
+}
+
+impl Drop for IndexerGuard {
+    fn drop(&mut self) {
+        get_model_manager().decrement_indexer();
+    }
+}
+
 pub struct BgeModel {
     pub session: Mutex<Session>,
     pub tokenizer: Tokenizer,
@@ -21,7 +43,9 @@ pub struct ModelManager {
     clip_text: RwLock<Option<Arc<CLIPTextModel>>>,
     
     active_search_count: AtomicUsize,
-    is_indexer_active: AtomicBool,
+    /// Number of concurrently active indexer operations (reindex pipeline,
+    /// single-file index from the background watcher, etc.).
+    indexer_count: AtomicUsize,
     is_paused: AtomicBool,
     
     last_failed_files: RwLock<Vec<(String, String)>>,
@@ -41,18 +65,29 @@ impl ModelManager {
             clip_vision: RwLock::new(None),
             clip_text: RwLock::new(None),
             active_search_count: AtomicUsize::new(0),
-            is_indexer_active: AtomicBool::new(false),
+            indexer_count: AtomicUsize::new(0),
             is_paused: AtomicBool::new(false),
             last_failed_files: RwLock::new(Vec::new()),
             last_skipped_files: RwLock::new(Vec::new()),
         }
     }
 
-    pub fn set_indexer_active(&self, active: bool, _config: &Config) {
-        self.is_indexer_active.store(active, Ordering::SeqCst);
-        if !active {
-            self.maybe_cleanup();
+    /// Increment the indexer counter.  Prefer using [`IndexerGuard`] instead
+    /// of calling this directly.
+    pub fn increment_indexer(&self) {
+        self.indexer_count.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Decrement the indexer counter and trigger cleanup if everything is idle.
+    /// Prefer using [`IndexerGuard`] instead of calling this directly.
+    pub fn decrement_indexer(&self) {
+        let prev = self.indexer_count.fetch_sub(1, Ordering::SeqCst);
+        // Guard against underflow (shouldn't happen, but be safe).
+        if prev == 0 {
+            tracing::warn!("decrement_indexer called when count was already 0");
+            self.indexer_count.store(0, Ordering::SeqCst);
         }
+        self.maybe_cleanup();
     }
 
     pub fn is_engine_paused(&self) -> bool {
@@ -64,7 +99,7 @@ impl ModelManager {
     }
 
     pub fn is_indexer_active(&self) -> bool {
-        self.is_indexer_active.load(Ordering::SeqCst)
+        self.indexer_count.load(Ordering::SeqCst) > 0
     }
 
     pub fn set_indexing_issues(&self, failed: Vec<(String, String)>, skipped: Vec<(String, String)>) {
@@ -125,7 +160,8 @@ impl ModelManager {
 
     fn maybe_cleanup(&self) {
         let search_active = self.active_search_count.load(Ordering::SeqCst) > 0;
-        let indexer_active = self.is_indexer_active.load(Ordering::SeqCst);
+        let indexer_active = self.indexer_count.load(Ordering::SeqCst) > 0;
+
         
         if !search_active && !indexer_active {
             tracing::info!("Both search and indexer are idle. Freeing ONNX model weights from RAM.");

@@ -329,10 +329,8 @@ pub fn run_reindex_pipeline_internal(
     db: &Arc<Database>,
     writer: Option<SharedWriter>,
 ) -> Result<ReindexStats, String> {
-    crate::state::get_model_manager().set_indexer_active(true, config);
-    let res = run_reindex_pipeline_internal_impl(config, db, writer);
-    crate::state::get_model_manager().set_indexer_active(false, config);
-    res
+    let _guard = crate::state::IndexerGuard::new();
+    run_reindex_pipeline_internal_impl(config, db, writer)
 }
 
 fn run_reindex_pipeline_internal_impl(
@@ -432,6 +430,12 @@ fn run_reindex_pipeline_internal_impl(
         
         let rt_handle = tokio::runtime::Handle::try_current().ok();
 
+        // Periodic progress reporting: fires every N items processed
+        // (indexed, skipped, or errored) so the UI stays updated even
+        // during fast skip sweeps on resume.
+        let mut items_since_last_report: u64 = 0;
+        const PROGRESS_REPORT_INTERVAL: u64 = 200;
+
         let report_progress = |stats: &ReindexStats, writer_opt: &Option<SharedWriter>, scanned_arc: &Arc<AtomicU64>, rt: &Option<tokio::runtime::Handle>, registry: &Arc<DirStatusRegistry>| {
             let s = scanned_arc.load(Ordering::Relaxed);
             let dir_snapshot = registry.snapshot();
@@ -493,6 +497,11 @@ fn run_reindex_pipeline_internal_impl(
                     tracing::warn!(path = %path.display(), error = %e, "Failed to read metadata — skipping");
                     stats.skipped += 1;
                     stats.skipped_files.push((path.display().to_string(), format!("metadata error: {}", e)));
+                    items_since_last_report += 1;
+                    if items_since_last_report >= PROGRESS_REPORT_INTERVAL {
+                        report_progress(&stats, &writer, &consumer_scanned, &rt_handle, &consumer_registry);
+                        items_since_last_report = 0;
+                    }
                     continue;
                 }
             };
@@ -530,6 +539,11 @@ fn run_reindex_pipeline_internal_impl(
                 {
                     debug!(path = %path.display(), "skipping unchanged file (mtime+size match)");
                     stats.skipped += 1;
+                    items_since_last_report += 1;
+                    if items_since_last_report >= PROGRESS_REPORT_INTERVAL {
+                        report_progress(&stats, &writer, &consumer_scanned, &rt_handle, &consumer_registry);
+                        items_since_last_report = 0;
+                    }
                     continue;
                 }
                 Ok(Some((ref chk, _, _))) => Some(chk.clone()),
@@ -545,6 +559,11 @@ fn run_reindex_pipeline_internal_impl(
                 tracing::warn!(path = %path.display(), size = meta.len(), limit = config_clone.max_file_bytes, "File size exceeds limit — skipping");
                 stats.skipped += 1;
                 stats.skipped_files.push((path.display().to_string(), format!("file too large: {} bytes (limit {})", meta.len(), config_clone.max_file_bytes)));
+                items_since_last_report += 1;
+                if items_since_last_report >= PROGRESS_REPORT_INTERVAL {
+                    report_progress(&stats, &writer, &consumer_scanned, &rt_handle, &consumer_registry);
+                    items_since_last_report = 0;
+                }
                 continue;
             }
 
@@ -554,6 +573,11 @@ fn run_reindex_pipeline_internal_impl(
                     tracing::info!(path = %path.display(), "File skipped by extractor");
                     stats.skipped += 1;
                     stats.skipped_files.push((path.display().to_string(), "unsupported format or binary content".to_string()));
+                    items_since_last_report += 1;
+                    if items_since_last_report >= PROGRESS_REPORT_INTERVAL {
+                        report_progress(&stats, &writer, &consumer_scanned, &rt_handle, &consumer_registry);
+                        items_since_last_report = 0;
+                    }
                     continue;
                 }
                 Err(e) => {
@@ -580,6 +604,11 @@ fn run_reindex_pipeline_internal_impl(
                 if *prev_checksum == checksum && checksum != "fallback_hash" {
                     debug!(path = %path.display(), "skipping unchanged file (checksum match)");
                     stats.skipped += 1;
+                    items_since_last_report += 1;
+                    if items_since_last_report >= PROGRESS_REPORT_INTERVAL {
+                        report_progress(&stats, &writer, &consumer_scanned, &rt_handle, &consumer_registry);
+                        items_since_last_report = 0;
+                    }
                     continue;
                 }
             }
@@ -625,6 +654,7 @@ fn run_reindex_pipeline_internal_impl(
 
             if flushed {
                 report_progress(&stats, &writer, &consumer_scanned, &rt_handle, &consumer_registry);
+                items_since_last_report = 0;
                 if crate::state::get_model_manager().has_pending_searches() {
                     info!("Search query detected. Indexer pausing between batches...");
                     std::thread::sleep(std::time::Duration::from_millis(500));
@@ -632,7 +662,6 @@ fn run_reindex_pipeline_internal_impl(
             }
         }
 
-        let mut final_flushed = false;
         if !text_batch.is_empty() {
             if let Err(e) = flush_text_batch(&mut text_batch, &config_clone, &db_clone, &mut stats) {
                 let err_msg = format!("{}", e);
@@ -642,7 +671,6 @@ fn run_reindex_pipeline_internal_impl(
                 stats.errors += text_batch.len() as u64;
                 text_batch.clear();
             }
-            final_flushed = true;
         }
         if !image_batch.is_empty() {
             if let Err(e) = flush_image_batch(&mut image_batch, &config_clone, &db_clone, &mut stats) {
@@ -653,12 +681,12 @@ fn run_reindex_pipeline_internal_impl(
                 stats.errors += image_batch.len() as u64;
                 image_batch.clear();
             }
-            final_flushed = true;
         }
         
-        if final_flushed {
-            report_progress(&stats, &writer, &consumer_scanned, &rt_handle, &consumer_registry);
-        }
+        // Always emit a final progress report so the UI reflects the
+        // finished state — even if every single file was skipped and no
+        // batch ever flushed.
+        report_progress(&stats, &writer, &consumer_scanned, &rt_handle, &consumer_registry);
 
         stats.scanned = consumer_scanned.load(Ordering::Relaxed);
         stats
@@ -1209,11 +1237,11 @@ pub fn start_background_watcher(
                                                 info!(rows, "Updated path in DB for renamed file");
                                             } else {
                                                 debug!("Renamed old path not found in DB, indexing new path");
-                                                crate::state::get_model_manager().set_indexer_active(true, &config);
+                                                let _guard = crate::state::IndexerGuard::new();
                                                 if let Err(e) = index_single_file(&conn, new_path, &config) {
                                                     error!(path = %new_path.display(), error = %e, "Failed to index renamed destination path");
                                                 }
-                                                crate::state::get_model_manager().set_indexer_active(false, &config);
+                                                drop(_guard);
                                             }
                                         }
                                         Err(e) => {
@@ -1242,11 +1270,11 @@ pub fn start_background_watcher(
                                     }
                                 } else if new_allowed {
                                     info!(path = %new_path.display(), "File moved into watched directory, indexing");
-                                    crate::state::get_model_manager().set_indexer_active(true, &config);
+                                    let _guard = crate::state::IndexerGuard::new();
                                     if let Err(e) = index_single_file(&conn, new_path, &config) {
                                         error!(path = %new_path.display(), error = %e, "Failed to index new file");
                                     }
-                                    crate::state::get_model_manager().set_indexer_active(false, &config);
+                                    drop(_guard);
                                 }
                             }
                         }
@@ -1260,11 +1288,11 @@ pub fn start_background_watcher(
                                 }
 
                                 info!(path = %path.display(), "Handling file create/modify");
-                                crate::state::get_model_manager().set_indexer_active(true, &config);
+                                let _guard = crate::state::IndexerGuard::new();
                                 if let Err(e) = index_single_file(&conn, path, &config) {
                                     error!(path = %path.display(), error = %e, "Failed to index file");
                                 }
-                                crate::state::get_model_manager().set_indexer_active(false, &config);
+                                drop(_guard);
                             }
                         }
                         EventKind::Remove(_) => {

@@ -254,24 +254,73 @@ struct RawHit {
     snippet: Option<String>,
 }
 
-/// Run FTS5 BM25 search.  Returns up to `limit` rows ordered by rank
-/// (best = most negative FTS5 score, ascending = best first).
+/// Run FTS5 BM25 search.  Returns up to `limit` rows ordered by relevance.
+///
+/// For **multi-term queries** (2+ terms after stop-word filtering), the
+/// function runs one BM25 query per term, then ranks documents by the number
+/// of distinct query terms they matched (term coverage).  Ties within the
+/// same coverage tier are broken by best BM25 rank across terms.
+///
+/// This ensures a document matching 3/4 query terms always outranks one that
+/// merely repeats a single term many times — directly fixing the App.jsx-vs-PDF
+/// ranking issue where OR-based BM25 rewarded term *frequency* over *coverage*.
+///
+/// For **single-term queries**, a plain FTS5 BM25 query is used (unchanged).
 fn run_bm25(conn: &Connection, text: &str, limit: usize) -> Result<Vec<RawHit>, DbError> {
     if text.trim().is_empty() {
         return Ok(Vec::new());
     }
 
-    // Escape FTS5 special characters and filter stop-words so user input
-    // doesn't break the query and linguistic noise is stripped before BM25.
-    let escaped = escape_fts5(text);
-
-    // If stop-word filtering removed all terms, skip the FTS leg entirely.
-    // The caller will fall through to semantic vector search.
-    if escaped.is_empty() {
+    let terms = extract_query_terms(text);
+    if terms.is_empty() {
         debug!(query = %text, "all query terms filtered as stop-words — skipping BM25");
         return Ok(Vec::new());
     }
 
+    // Single-term: plain BM25 query (no coverage logic needed).
+    if terms.len() == 1 {
+        let fts_query = format!(r#""{}""#, terms[0]);
+        return run_bm25_query(conn, &fts_query, limit);
+    }
+
+    // ---------------------------------------------------------------
+    // Multi-term: per-term BM25 queries → merge by term coverage
+    // ---------------------------------------------------------------
+    // HashMap doc_id → (RawHit, term_count, best_bm25_rank)
+    let mut doc_info: HashMap<i64, (RawHit, usize, usize)> = HashMap::new();
+
+    for term in &terms {
+        let fts_query = format!(r#""{}""#, term);
+        match run_bm25_query(conn, &fts_query, limit * 2) {
+            Ok(hits) => {
+                for (rank_0, hit) in hits.into_iter().enumerate() {
+                    let entry = doc_info.entry(hit.doc_id)
+                        .or_insert_with(|| (hit, 0, usize::MAX));
+                    entry.1 += 1;                        // term_count
+                    entry.2 = entry.2.min(rank_0);       // best_bm25_rank
+                }
+            }
+            Err(e) => {
+                warn!(term = %term, error = %e, "per-term BM25 query failed");
+            }
+        }
+    }
+
+    // Sort: primary by term_count DESC, secondary by best BM25 rank ASC.
+    let mut results: Vec<_> = doc_info.into_values().collect();
+    results.sort_by(|a, b| {
+        b.1.cmp(&a.1)                   // more matching terms = better
+            .then_with(|| a.2.cmp(&b.2)) // lower BM25 rank = better
+    });
+    results.truncate(limit);
+
+    let hits: Vec<RawHit> = results.into_iter().map(|(hit, _, _)| hit).collect();
+    debug!(query = %text, count = hits.len(), "BM25 hits (multi-term coverage)");
+    Ok(hits)
+}
+
+/// Execute a single FTS5 BM25 query and return raw hits ordered by rank.
+fn run_bm25_query(conn: &Connection, fts_query: &str, limit: usize) -> Result<Vec<RawHit>, DbError> {
     let mut stmt = conn
         .prepare(
             "SELECT d.id, d.path,
@@ -286,7 +335,7 @@ fn run_bm25(conn: &Connection, text: &str, limit: usize) -> Result<Vec<RawHit>, 
 
     let hits = stmt
         .query_map(
-            rusqlite::params![escaped, limit as i64],
+            rusqlite::params![fts_query, limit as i64],
             |row| {
                 let path: String = row.get(1)?;
                 let title = std::path::Path::new(&path)
@@ -306,8 +355,77 @@ fn run_bm25(conn: &Connection, text: &str, limit: usize) -> Result<Vec<RawHit>, 
         .collect::<Result<Vec<_>, _>>()
         .map_err(DbError::Rusqlite)?;
 
-    debug!(query = %text, count = hits.len(), "BM25 hits");
     Ok(hits)
+}
+
+/// Escape characters that have special meaning in FTS5 MATCH expressions
+/// and strip English stop-words to reduce linguistic noise in BM25 scoring.
+///
+/// # Stop-word filtering
+///
+/// Common English function words ("a", "the", "is", …) are removed because
+/// they appear in almost every document and therefore add no discriminative
+/// power to BM25 ranking.  Tokens shorter than 2 characters are also dropped
+/// — unless the entire original query is a single short term (e.g. the
+/// programming language "R") in which case the lone token is preserved so
+/// the search is not silently discarded.
+///
+/// If filtering removes **all** terms the function returns an empty string,
+/// which causes `run_bm25` to skip the FTS leg entirely and rely on the
+/// semantic vector search path instead.
+#[allow(dead_code)] // used by unit tests
+fn escape_fts5(text: &str) -> String {
+    let filtered = extract_query_terms(text);
+    if filtered.is_empty() {
+        return String::new();
+    }
+
+    // Wrap each surviving term in quotes and join with OR.
+    filtered
+        .iter()
+        .map(|term| format!(r#""{}""#, term))
+        .collect::<Vec<_>>()
+        .join(" OR ")
+}
+
+// ---------------------------------------------------------------------------
+// Query term extraction and stop-word filtering
+// ---------------------------------------------------------------------------
+
+/// Strict English stop-word list — common function words that carry
+/// almost zero discriminative power for BM25 retrieval.
+const STOP_WORDS: &[&str] = &[
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "in", "on", "at", "of", "for", "with", "by", "about", "to", "from",
+    "it", "this", "that",
+];
+
+/// Extract and filter query terms from raw user input.
+///
+/// Non-alphanumeric characters are replaced with spaces, stop-words and
+/// single-character tokens are removed (unless the query is a single term).
+fn extract_query_terms(text: &str) -> Vec<String> {
+    let safe_text: String = text
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect();
+
+    let raw_terms: Vec<&str> = safe_text.split_whitespace().collect();
+
+    if raw_terms.len() == 1 {
+        // Single-term query — keep it regardless of length / stop-word status
+        // so the user always gets *something* from BM25.
+        raw_terms.into_iter().map(|s| s.to_string()).collect()
+    } else {
+        raw_terms
+            .into_iter()
+            .filter(|t| {
+                let lower = t.to_lowercase();
+                lower.len() >= 2 && !STOP_WORDS.contains(&lower.as_str())
+            })
+            .map(|s| s.to_string())
+            .collect()
+    }
 }
 
 /// Run sqlite-vec ANN (approximate nearest neighbour) search.
@@ -469,68 +587,6 @@ fn run_like_fallback(
 
     debug!(count = hits.len(), "LIKE fallback hits");
     Ok(hits)
-}
-
-/// Escape characters that have special meaning in FTS5 MATCH expressions
-/// and strip English stop-words to reduce linguistic noise in BM25 scoring.
-///
-/// # Stop-word filtering
-///
-/// Common English function words ("a", "the", "is", …) are removed because
-/// they appear in almost every document and therefore add no discriminative
-/// power to BM25 ranking.  Tokens shorter than 2 characters are also dropped
-/// — unless the entire original query is a single short term (e.g. the
-/// programming language "R") in which case the lone token is preserved so
-/// the search is not silently discarded.
-///
-/// If filtering removes **all** terms the function returns an empty string,
-/// which causes `run_bm25` to skip the FTS leg entirely and rely on the
-/// semantic vector search path instead.
-fn escape_fts5(text: &str) -> String {
-    /// Strict English stop-word list — common function words that carry
-    /// almost zero discriminative power for BM25 retrieval.
-    const STOP_WORDS: &[&str] = &[
-        "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-        "in", "on", "at", "of", "for", "with", "by", "about", "to", "from",
-        "it", "this", "that",
-    ];
-
-    // 1. Convert all non-alphanumeric characters to spaces to avoid FTS5
-    //    syntax errors, then lowercase for stop-word comparison.
-    let safe_text: String = text
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
-        .collect();
-
-    let raw_terms: Vec<&str> = safe_text.split_whitespace().collect();
-
-    // 2. Filter: remove stop-words and single-character tokens.
-    //    Exception: if the entire query is a single short term, keep it
-    //    so "R" or "C" still produces results.
-    let filtered: Vec<&str> = if raw_terms.len() == 1 {
-        // Single-term query — keep it regardless of length / stop-word status
-        // so the user always gets *something* from BM25.
-        raw_terms
-    } else {
-        raw_terms
-            .into_iter()
-            .filter(|t| {
-                let lower = t.to_lowercase();
-                lower.len() >= 2 && !STOP_WORDS.contains(&lower.as_str())
-            })
-            .collect()
-    };
-
-    if filtered.is_empty() {
-        return String::new();
-    }
-
-    // 3. Wrap each surviving term in quotes and join with OR.
-    filtered
-        .iter()
-        .map(|term| format!("\"{}\"", term))
-        .collect::<Vec<_>>()
-        .join(" OR ")
 }
 
 // ---------------------------------------------------------------------------

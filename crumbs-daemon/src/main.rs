@@ -126,16 +126,10 @@ async fn main() {
     });
 
     // -----------------------------------------------------------------------
-    // 4c. BGE-small ONNX session initialization (BLOCKING)
+    // 4c. BGE-small ONNX session — loaded lazily on first search/index.
+    //     Removed eager init to avoid permanent ~90 MB RAM footprint when idle.
     // -----------------------------------------------------------------------
-    {
-        let init_config = crawl_config.clone();
-        info!("Loading BGE-small ONNX model (this may take a few seconds)...");
-        let _ = tokio::task::spawn_blocking(move || {
-            let _ = state::get_model_manager().get_bge(&init_config);
-        }).await;
-        info!("BGE-small initialization complete (model ready = {})", embed::is_bge_ready());
-    }
+    info!("BGE-small will be loaded lazily on first use.");
 
     // -----------------------------------------------------------------------
     // 5. Throttle process priority
