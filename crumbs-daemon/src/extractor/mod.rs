@@ -293,7 +293,7 @@ fn extract_pdf(path: &Path, config: &Config) -> Result<Extracted, ExtractError> 
 
         // Low-Hardware OCR Fallback: If <50 chars, assume scanned
         if page_text.trim().len() < 50 {
-            if pages_ocred < 5 { // GUARDRAIL: Max 5 pages of OCR to save CPU
+            if pages_ocred < config.pdf_ocr_max_pages { // Configurable OCR page limit (default 10)
                 if ocr_engine.is_none() {
                     let detection_model_path = config.model_cache_dir().join("text-detection.rten");
                     let recognition_model_path = config.model_cache_dir().join("text-recognition.rten");
@@ -356,6 +356,13 @@ fn extract_pdf(path: &Path, config: &Config) -> Result<Extracted, ExtractError> 
                 }
                 } // End if let Some(engine)
                 pages_ocred += 1;
+                if pages_ocred >= config.pdf_ocr_max_pages {
+                    tracing::warn!(
+                        path = %path.display(),
+                        limit = config.pdf_ocr_max_pages,
+                        "PDF OCR page limit reached — remaining scanned pages will not be OCR'd"
+                    );
+                }
             }
         }
 

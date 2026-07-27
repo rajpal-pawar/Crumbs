@@ -118,8 +118,13 @@ async fn main() {
     let crawl_config = Arc::new(config.clone());
     let crawl_db = Arc::clone(&db);
 
+    let shared_writer: ipc::SharedWriter = Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
+
+    let ipc_writer = Arc::clone(&shared_writer);
+    let ipc_config = config.clone();
+    let ipc_db = Arc::clone(&db);
     let ipc_handle = tokio::spawn(async move {
-        if let Err(e) = ipc::run_loop(config, db).await {
+        if let Err(e) = ipc::run_loop(ipc_config, ipc_db, ipc_writer).await {
             error!(error = %e, "IPC run-loop terminated with error");
             std::process::exit(1);
         }
@@ -160,8 +165,9 @@ async fn main() {
         let _ = tokio::task::spawn_blocking({
             let crawl_config = Arc::clone(&crawl_config);
             let crawl_db = Arc::clone(&crawl_db);
+            let crawl_writer = Arc::clone(&shared_writer);
             move || {
-                if let Err(e) = handlers::run_reindex_pipeline(&crawl_config, &crawl_db) {
+                if let Err(e) = handlers::run_reindex_pipeline_internal(&crawl_config, &crawl_db, Some(crawl_writer)) {
                     error!(error = %e, "initial crawl failed");
                 } else {
                     info!("initial crawl completed successfully");
@@ -194,10 +200,19 @@ async fn main() {
 
         for dir in &crawl_config.watch_dirs {
             if dir.exists() {
-                if let Err(e) = watcher.watch(dir, RecursiveMode::NonRecursive) {
-                    warn!(path = %dir.display(), error = %e, "failed to watch directory");
-                } else {
-                    info!(path = %dir.display(), "watching directory for changes (non-recursive)");
+                match watcher.watch(dir, RecursiveMode::Recursive) {
+                    Ok(_) => {
+                        info!(path = %dir.display(), "watching directory for changes (recursive)");
+                    }
+                    Err(e) => {
+                        warn!(
+                            path = %dir.display(), error = %e,
+                            "recursive watch failed — falling back to shallow watch. \
+                             On Linux, increase fs.inotify.max_user_watches if needed."
+                        );
+                        // Best-effort: at least watch the top-level directory.
+                        let _ = watcher.watch(dir, RecursiveMode::NonRecursive);
+                    }
                 }
             }
         }

@@ -111,13 +111,10 @@ pub type SharedWriter = Arc<Mutex<tokio::io::Stdout>>;
 /// # Errors
 /// Returns on unrecoverable I/O failure.  A malformed JSON line is logged and
 /// skipped — it does not terminate the loop.
-pub async fn run_loop(config: Config, db: Arc<Database>) -> Result<(), IpcError> {
+pub async fn run_loop(config: Config, db: Arc<Database>, writer: SharedWriter) -> Result<(), IpcError> {
     let atomic_config = Arc::new(AtomicConfig::new(config.clone()));
     let config = Arc::new(config);
     // db is already Arc<Database> — no re-wrap needed.
-
-    // Wrap stdout in a shared mutex.  Only this writer may touch stdout.
-    let writer: SharedWriter = Arc::new(Mutex::new(tokio::io::stdout()));
 
     // Wrap stdin in an async buffered reader.
     let stdin = BufReader::new(tokio::io::stdin());

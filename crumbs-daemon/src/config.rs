@@ -70,6 +70,11 @@ pub struct Config {
     /// When `false`, the daemon skips automatic crawling and waits for
     /// explicit IPC commands to set up folders.
     pub is_onboarded: bool,
+
+    /// Maximum number of pages to OCR in a scanned PDF.
+    /// Higher values improve coverage but increase CPU time.
+    /// Default: 10.
+    pub pdf_ocr_max_pages: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +295,7 @@ impl Config {
             watch_dirs,
             index_parallelism: 1,
             is_onboarded: persisted.is_onboarded,
+            pdf_ocr_max_pages: 10,
         })
     }
 

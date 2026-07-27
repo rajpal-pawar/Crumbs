@@ -52,9 +52,17 @@ pub fn register_vec_extension() {
     // by the `sqlite-vec` static library.  We transmute it to the opaque
     // function-pointer type that `sqlite3_auto_extension` expects.
     unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-            sqlite_vec::sqlite3_vec_init as *const (),
-        )));
+        // SAFETY: `sqlite3_vec_init` has the exact signature that
+        // `sqlite3_auto_extension` expects.  The explicit transmute
+        // from/to types documents the ABI contract.
+        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
+            *const (),
+            unsafe extern "C" fn(
+                *mut rusqlite::ffi::sqlite3,
+                *mut *const ::std::os::raw::c_char,
+                *const rusqlite::ffi::sqlite3_api_routines,
+            ) -> ::std::os::raw::c_int,
+        >(sqlite_vec::sqlite3_vec_init as *const ())));
     }
     info!("sqlite-vec extension registered via sqlite3_auto_extension");
 }

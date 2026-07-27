@@ -9,15 +9,12 @@
 //! `Vec<f32>` embeddings are stored as raw byte blobs via `zerocopy::AsBytes`
 //! — zero allocation, no serialisation overhead.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use rusqlite::{OptionalExtension, Transaction};
-use tracing::{debug, error, info, warn};
-use walkdir::WalkDir;
+use tracing::{debug, warn};
 use zerocopy::AsBytes as _;
 
-use crate::config::Config;
-use crate::extractor;
 use crate::index::DbError;
 
 // ---------------------------------------------------------------------------
@@ -209,44 +206,5 @@ pub fn delete(tx: &Transaction, path: &Path) -> Result<bool, DbError> {
     Ok(true)
 }
 
-// ---------------------------------------------------------------------------
-// scan_directories
-// ---------------------------------------------------------------------------
 
-/// Scan a directory, extract documents, and process them.
-pub fn scan_directories(config: &Config, path: &PathBuf) -> Result<(), DbError> {
-    info!("Starting scan of directory: {}", path.display());
-
-    let walker = WalkDir::new(path)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file());
-
-    for entry in walker {
-        let file_path = entry.path();
-
-        match extractor::extract(file_path, config) {
-            Ok(Some(extracted)) => {
-                // To fully index these, we would need to run them through the
-                // embedding pipeline and open a database transaction.
-                // For now, we log the successful extraction.
-                info!(
-                    path = %file_path.display(),
-                    mime_type = %extracted.mime_type(),
-                    "successfully extracted file"
-                );
-            }
-            Ok(None) => {
-                debug!(path = %file_path.display(), "skipped un-indexable file");
-            }
-            Err(e) => {
-                error!(path = %file_path.display(), error = %e, "extraction error during scan");
-            }
-        }
-    }
-
-    info!("Completed scan of directory: {}", path.display());
-    Ok(())
-}
 
