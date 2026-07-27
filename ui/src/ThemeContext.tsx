@@ -29,6 +29,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const useTheme = () => useContext(ThemeContext);
 
 // Theme toggle button component

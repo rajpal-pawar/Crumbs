@@ -28,9 +28,9 @@ export function useSearch(query: string): SearchState {
     const trimmed = query.trim();
 
     if (!trimmed) {
-      setState({ status: 'idle' });
       return;
     }
+
 
     // Bump generation so any in-flight request from a previous query
     // will see a stale generation and discard its result.
@@ -66,6 +66,10 @@ export function useSearch(query: string): SearchState {
 
     return () => clearTimeout(timer);
   }, [query]);
+
+  if (!query.trim()) {
+    return { status: 'idle' };
+  }
 
   return state;
 }
