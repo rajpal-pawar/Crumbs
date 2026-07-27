@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { ThemeToggle } from '../ThemeContext';
@@ -60,12 +60,16 @@ function useDebouncedCallback<T extends (...args: any[]) => void>(
 ): T {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fnRef = useRef(fn);
-  fnRef.current = fn;
+  
+  // Use layout effect to safely update the ref without triggering rules-of-hooks/render issues.
+  useLayoutEffect(() => {
+    fnRef.current = fn;
+  }, [fn]);
 
-  return useCallback(((...args: any[]) => {
+  return useCallback((...args: any[]) => {
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => fnRef.current(...args), delayMs);
-  }) as unknown as T, [delayMs]);
+  }, [delayMs]) as unknown as T;
 }
 
 export default function Dashboard() {
