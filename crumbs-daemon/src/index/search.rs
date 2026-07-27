@@ -279,7 +279,7 @@ fn run_bm25(conn: &Connection, text: &str, limit: usize) -> Result<Vec<RawHit>, 
 
     // Single-term: plain BM25 query (no coverage logic needed).
     if terms.len() == 1 {
-        let fts_query = format!(r#""{}""#, terms[0]);
+        let fts_query = format!(r#""{}""#, terms[0].replace('"', "\"\""));
         return run_bm25_query(conn, &fts_query, limit);
     }
 
@@ -290,7 +290,7 @@ fn run_bm25(conn: &Connection, text: &str, limit: usize) -> Result<Vec<RawHit>, 
     let mut doc_info: HashMap<i64, (RawHit, usize, usize)> = HashMap::new();
 
     for term in &terms {
-        let fts_query = format!(r#""{}""#, term);
+        let fts_query = format!(r#""{}""#, term.replace('"', "\"\""));
         match run_bm25_query(conn, &fts_query, limit * 2) {
             Ok(hits) => {
                 for (rank_0, hit) in hits.into_iter().enumerate() {
@@ -407,7 +407,13 @@ const STOP_WORDS: &[&str] = &[
 fn extract_query_terms(text: &str) -> Vec<String> {
     let safe_text: String = text
         .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '+' || c == '.' || c == '_' {
+                c
+            } else {
+                ' '
+            }
+        })
         .collect();
 
     let raw_terms: Vec<&str> = safe_text.split_whitespace().collect();
@@ -625,6 +631,12 @@ mod tests {
     fn test_escape_fts5_plain() {
         let escaped = escape_fts5("rust async");
         assert_eq!(escaped, r#""rust" OR "async""#);
+    }
+
+    #[test]
+    fn test_escape_fts5_preserves_special_chars() {
+        let escaped = escape_fts5("C++ state-machine");
+        assert_eq!(escaped, r#""C++" OR "state-machine""#);
     }
 
     #[test]
