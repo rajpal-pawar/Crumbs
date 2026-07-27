@@ -15,6 +15,25 @@ use tauri::AppHandle;
 
 use crate::daemon::{self, DaemonHandle};
 
+/// Model download manifest embedded at compile time.
+/// Edit `models_manifest.json` to update URLs and hashes.
+const MODELS_MANIFEST: &str = include_str!("../models_manifest.json");
+
+#[derive(serde::Deserialize)]
+#[allow(dead_code)]
+struct ModelsManifest {
+    version: String,
+    models_zip: ModelEntry,
+}
+
+#[derive(serde::Deserialize)]
+#[allow(dead_code)]
+struct ModelEntry {
+    url: String,
+    sha256: String,
+    size: u64,
+}
+
 // ---------------------------------------------------------------------------
 // search
 // ---------------------------------------------------------------------------
@@ -110,6 +129,16 @@ pub async fn reindex(
 /// ```
 #[tauri::command]
 pub fn open_file(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+
+    // Reject non-existent paths and relative paths to prevent traversal attacks.
+    if !p.is_absolute() {
+        return Err("Path must be absolute".to_string());
+    }
+    if !p.exists() {
+        return Err(format!("File does not exist: {}", path));
+    }
+
     tracing::info!("Opening file via OS: {}", path);
 
     #[cfg(target_os = "windows")]
@@ -412,6 +441,36 @@ async fn do_download_models(url: String, app: &AppHandle) -> Result<(), String> 
     }
     file.flush().await.map_err(|e| format!("File flush error: {e}"))?;
 
+    // Verify download integrity via SHA-256 if a hash is specified in the manifest.
+    let manifest: ModelsManifest = serde_json::from_str(MODELS_MANIFEST)
+        .map_err(|e| format!("Failed to parse models manifest: {e}"))?;
+    let expected_hash = &manifest.models_zip.sha256;
+    if !expected_hash.is_empty() {
+        tracing::info!("download_models: verifying SHA-256 integrity...");
+        let tmp_zip_for_hash = tmp_zip.clone();
+        let expected = expected_hash.clone();
+        let hash_ok = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+            use sha2::Digest;
+            let mut hasher = sha2::Sha256::new();
+            let mut f = std::fs::File::open(&tmp_zip_for_hash)
+                .map_err(|e| format!("Cannot open zip for hashing: {e}"))?;
+            std::io::copy(&mut f, &mut hasher)
+                .map_err(|e| format!("Hash read error: {e}"))?;
+            let actual = hex::encode(hasher.finalize());
+            Ok(actual == expected)
+        })
+        .await
+        .map_err(|e| format!("Hash task panicked: {e}"))??;
+
+        if !hash_ok {
+            let _ = tokio::fs::remove_file(&tmp_zip).await;
+            return Err("Downloaded models.zip failed SHA-256 integrity check. The file may be corrupted or tampered with.".to_string());
+        }
+        tracing::info!("download_models: SHA-256 verification passed");
+    } else {
+        tracing::warn!("download_models: no SHA-256 hash in manifest — skipping integrity check");
+    }
+
     tracing::info!("download_models: download complete — extracting to {:?}", models_dir);
 
     let tmp_zip_clone = tmp_zip.clone();
@@ -491,7 +550,8 @@ pub fn check_models_exist() -> Result<bool, String> {
 
 #[tauri::command]
 pub async fn start_model_download(app: AppHandle) -> Result<String, String> {
-    let url = "https://github.com/rajpal-pawar/Crumbs/releases/download/crumbs-v1.0.0/models.zip".to_string();
-    download_models(url, app).await
+    let manifest: ModelsManifest = serde_json::from_str(MODELS_MANIFEST)
+        .map_err(|e| format!("Failed to parse models manifest: {e}"))?;
+    download_models(manifest.models_zip.url, app).await
 }
 
