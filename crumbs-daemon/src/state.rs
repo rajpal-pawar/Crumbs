@@ -46,6 +46,9 @@ pub struct ModelManager {
     /// Number of concurrently active indexer operations (reindex pipeline,
     /// single-file index from the background watcher, etc.).
     indexer_count: AtomicUsize,
+    /// Timestamp of the last activity (search or indexing).
+    /// Used by `maybe_cleanup()` to defer model unloading.
+    last_activity: Mutex<std::time::Instant>,
     is_paused: AtomicBool,
     
     last_failed_files: RwLock<Vec<(String, String)>>,
@@ -66,15 +69,23 @@ impl ModelManager {
             clip_text: RwLock::new(None),
             active_search_count: AtomicUsize::new(0),
             indexer_count: AtomicUsize::new(0),
+            last_activity: Mutex::new(std::time::Instant::now()),
             is_paused: AtomicBool::new(false),
             last_failed_files: RwLock::new(Vec::new()),
             last_skipped_files: RwLock::new(Vec::new()),
         }
     }
 
+    fn touch_activity(&self) {
+        if let Ok(mut t) = self.last_activity.lock() {
+            *t = std::time::Instant::now();
+        }
+    }
+
     /// Increment the indexer counter.  Prefer using [`IndexerGuard`] instead
     /// of calling this directly.
     pub fn increment_indexer(&self) {
+        self.touch_activity();
         self.indexer_count.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -138,6 +149,7 @@ impl ModelManager {
     }
 
     pub fn increment_search(&self) {
+        self.touch_activity();
         self.active_search_count.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -162,18 +174,41 @@ impl ModelManager {
         let search_active = self.active_search_count.load(Ordering::SeqCst) > 0;
         let indexer_active = self.indexer_count.load(Ordering::SeqCst) > 0;
 
-        
-        if !search_active && !indexer_active {
-            tracing::info!("Both search and indexer are idle. Freeing ONNX model weights from RAM.");
-            if let Ok(mut lock) = self.bge.write() {
-                *lock = None;
-            }
-            if let Ok(mut lock) = self.clip_vision.write() {
-                *lock = None;
-            }
-            if let Ok(mut lock) = self.clip_text.write() {
-                *lock = None;
-            }
+        if search_active || indexer_active {
+            return;
+        }
+
+        // Defer cleanup: spawn a thread that waits 60 seconds and then
+        // checks again whether the system is still idle.
+        let idle_timeout = std::time::Duration::from_secs(60);
+        let last = self.last_activity.lock().ok().map(|t| *t);
+        let Some(last_time) = last else { return };
+
+        // If less than 60s since last activity, schedule a deferred cleanup.
+        if last_time.elapsed() < idle_timeout {
+            std::thread::spawn(move || {
+                std::thread::sleep(idle_timeout);
+                // Re-check after sleeping.
+                let mgr = get_model_manager();
+                let still_idle = mgr.active_search_count.load(Ordering::SeqCst) == 0
+                    && mgr.indexer_count.load(Ordering::SeqCst) == 0;
+                if still_idle {
+                    if let Ok(last) = mgr.last_activity.lock() {
+                        if last.elapsed() >= idle_timeout {
+                            tracing::info!("60s idle timeout reached. Freeing ONNX model weights from RAM.");
+                            if let Ok(mut lock) = mgr.bge.write() { *lock = None; }
+                            if let Ok(mut lock) = mgr.clip_vision.write() { *lock = None; }
+                            if let Ok(mut lock) = mgr.clip_text.write() { *lock = None; }
+                        }
+                    }
+                }
+            });
+        } else {
+            // Already past the timeout — clean up immediately.
+            tracing::info!("Idle timeout already elapsed. Freeing ONNX model weights from RAM.");
+            if let Ok(mut lock) = self.bge.write() { *lock = None; }
+            if let Ok(mut lock) = self.clip_vision.write() { *lock = None; }
+            if let Ok(mut lock) = self.clip_text.write() { *lock = None; }
         }
     }
 
