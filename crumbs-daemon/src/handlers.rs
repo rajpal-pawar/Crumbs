@@ -396,8 +396,16 @@ fn run_reindex_pipeline_internal_impl(
 
                 let path = entry.path().to_path_buf();
 
-                // Task 1.2: Absolute boundary assertion check before pushing path to MPSC queue
-                if !config_clone.watch_dirs.iter().any(|allowed_dir| path.starts_with(allowed_dir)) {
+                // Task 1.2: Absolute boundary assertion check before pushing path to MPSC queue.
+                // Canonicalize to resolve symlinks and prevent traversal attacks.
+                let canonical = match std::fs::canonicalize(&path) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+                let in_bounds = config_clone.watch_dirs.iter().any(|allowed_dir| {
+                    allowed_dir.canonicalize().map_or(false, |a| canonical.starts_with(&a))
+                });
+                if !in_bounds {
                     continue; // Reject instantly if it strayed out of bounds
                 }
 
@@ -452,19 +460,14 @@ fn run_reindex_pipeline_internal_impl(
                 json!({"path": p, "reason": r})
             }).collect();
 
-            println!(
-                "{}",
-                serde_json::json!({
-                    "status": "indexing",
-                    "indexed": stats.indexed,
-                    "processed": processed,
-                    "errors": stats.errors,
-                    "skipped": stats.skipped,
-                    "total": s,
-                    "directories": dirs_json,
-                    "failed_files": failed_json,
-                    "skipped_files": skipped_json
-                })
+            // Log progress to stderr (tracing) — NOT stdout, which is the IPC wire.
+            tracing::info!(
+                indexed = stats.indexed,
+                processed,
+                errors = stats.errors,
+                skipped = stats.skipped,
+                total = s,
+                "indexing progress"
             );
 
             if let (Some(w), Some(h)) = (writer_opt, rt) {
@@ -585,9 +588,17 @@ fn run_reindex_pipeline_internal_impl(
                     stats.failed_files.push((path.display().to_string(), format!("extraction error: {:?}", e)));
                     let filename = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     let mime_type = mime_guess::from_path(&path).first_or_text_plain().to_string();
+                    // Use a path-based hash instead of a static string so that
+                    // different files that fail extraction get unique checksums.
+                    let fallback_checksum = {
+                        use std::hash::{Hash, Hasher};
+                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                        path.hash(&mut h);
+                        format!("fallback:{:016x}", h.finish())
+                    };
                     extractor::Extracted::Text {
                         chunks: vec![filename],
-                        checksum: "fallback_hash".to_string(),
+                        checksum: fallback_checksum,
                         mime_type,
                     }
                 }
@@ -601,7 +612,7 @@ fn run_reindex_pipeline_internal_impl(
             // Secondary guard: mtime/size changed but content is identical (e.g. a
             // touch or copy-over with same bytes).  Skip embedding to avoid bloat.
             if let Some(ref prev_checksum) = stored_checksum {
-                if *prev_checksum == checksum && checksum != "fallback_hash" {
+                if *prev_checksum == checksum && !checksum.starts_with("fallback:") {
                     debug!(path = %path.display(), "skipping unchanged file (checksum match)");
                     stats.skipped += 1;
                     items_since_last_report += 1;
@@ -714,19 +725,14 @@ fn run_reindex_pipeline_internal_impl(
         json!({"path": p, "reason": r})
     }).collect();
 
-    println!(
-        "{}",
-        serde_json::json!({
-            "status": "completed",
-            "indexed": stats.indexed,
-            "processed": processed,
-            "errors": stats.errors,
-            "skipped": stats.skipped,
-            "total": stats.scanned,
-            "directories": final_dirs,
-            "failed_files": failed_json,
-            "skipped_files": skipped_json
-        })
+    // Log final stats to stderr (tracing) — NOT stdout, which is the IPC wire.
+    tracing::info!(
+        indexed = stats.indexed,
+        processed,
+        errors = stats.errors,
+        skipped = stats.skipped,
+        total = stats.scanned,
+        "indexing completed"
     );
 
     crate::state::get_model_manager().set_indexing_issues(stats.failed_files.clone(), stats.skipped_files.clone());
@@ -830,12 +836,23 @@ fn cleanup_removed_dirs(db: &Database, removed_dirs: &[PathBuf]) -> Result<(), S
             .map_err(crate::index::DbError::Rusqlite)?;
 
         for dir in removed_dirs {
-            let prefix = format!("{}%", dir.display());
+            // Escape LIKE wildcards in the directory path to prevent
+            // unintended pattern matching (e.g. a dir named "foo%bar").
+            // Also append a trailing '/' so "/docs" doesn't match "/docs_backup".
+            let escaped = dir.display().to_string()
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            let prefix = if escaped.ends_with('/') || escaped.ends_with('\\') {
+                format!("{}%", escaped)
+            } else {
+                format!("{}/%", escaped)
+            };
             info!("Cleaning up documents under removed dir: {}", dir.display());
 
             // Find doc IDs under this path prefix.
             let mut stmt = tx.prepare(
-                "SELECT id FROM documents WHERE path LIKE ?1"
+                "SELECT id FROM documents WHERE path LIKE ?1 ESCAPE '\\'"
             ).map_err(crate::index::DbError::Rusqlite)?;
 
             let doc_ids: Vec<i64> = stmt.query_map(
@@ -859,7 +876,7 @@ fn cleanup_removed_dirs(db: &Database, removed_dirs: &[PathBuf]) -> Result<(), S
             }
 
             tx.execute(
-                "DELETE FROM documents WHERE path LIKE ?1",
+                "DELETE FROM documents WHERE path LIKE ?1 ESCAPE '\\'",
                 rusqlite::params![prefix],
             ).map_err(crate::index::DbError::Rusqlite)?;
 
@@ -1089,8 +1106,8 @@ fn flush_image_batch(
     }
 
     let images: Vec<DynamicImage> = batch
-        .iter()
-        .filter_map(|item| item.image.as_ref().map(|img| img.clone()))
+        .iter_mut()
+        .filter_map(|item| item.image.take())
         .collect();
 
     // Open CLIP, embed, drop session.
@@ -1220,8 +1237,16 @@ pub fn start_background_watcher(
                                 let old_path = &event.paths[0];
                                 let new_path = &event.paths[1];
 
-                                let old_allowed = config.watch_dirs.iter().any(|allowed| old_path.starts_with(allowed));
-                                let new_allowed = config.watch_dirs.iter().any(|allowed| new_path.starts_with(allowed));
+                                let old_allowed = config.watch_dirs.iter().any(|allowed| {
+                                    allowed.canonicalize().map_or(false, |a| {
+                                        old_path.canonicalize().map_or(false, |p| p.starts_with(&a))
+                                    })
+                                });
+                                let new_allowed = config.watch_dirs.iter().any(|allowed| {
+                                    allowed.canonicalize().map_or(false, |a| {
+                                        new_path.canonicalize().map_or(false, |p| p.starts_with(&a))
+                                    })
+                                });
 
                                 if old_allowed && new_allowed {
                                     info!(old = %old_path.display(), new = %new_path.display(), "Handling file rename");
@@ -1280,7 +1305,11 @@ pub fn start_background_watcher(
                         }
                         EventKind::Create(_) | EventKind::Modify(_) => {
                             for path in &event.paths {
-                                if !config.watch_dirs.iter().any(|allowed| path.starts_with(allowed)) {
+                                if !config.watch_dirs.iter().any(|allowed| {
+                                    allowed.canonicalize().map_or(false, |a| {
+                                        path.canonicalize().map_or(false, |p| p.starts_with(&a))
+                                    })
+                                }) {
                                     continue;
                                 }
                                 if !path.exists() {
@@ -1297,7 +1326,11 @@ pub fn start_background_watcher(
                         }
                         EventKind::Remove(_) => {
                             for path in &event.paths {
-                                if !config.watch_dirs.iter().any(|allowed| path.starts_with(allowed)) {
+                                if !config.watch_dirs.iter().any(|allowed| {
+                                    allowed.canonicalize().map_or(false, |a| {
+                                        path.canonicalize().map_or(false, |p| p.starts_with(&a))
+                                    })
+                                }) {
                                     continue;
                                 }
                                 info!(path = %path.display(), "Handling file removal");
