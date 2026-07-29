@@ -14,13 +14,6 @@ import { enable } from '@tauri-apps/plugin-autostart';
 // SVG icons (inline — no icon library dependency)
 // ---------------------------------------------------------------------------
 
-// const SearchIcon = () => (
-//   <svg className="search-icon" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
-//     <circle cx="8.5" cy="8.5" r="5.5" />
-//     <path d="M14.5 14.5 L18 18" strokeLinecap="round" />
-//   </svg>
-// );
-
 const DocumentIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="file-icon">
     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
