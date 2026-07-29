@@ -64,6 +64,21 @@ function middleTruncate(path: string, maxLength: number = 65) {
 }
 
 // ---------------------------------------------------------------------------
+// Snippet sanitisation — only allow the FTS5 highlight tags (<b>, </b>)
+// to prevent XSS from indexed file content rendered via dangerouslySetInnerHTML.
+// ---------------------------------------------------------------------------
+
+function sanitizeSnippet(html: string): string {
+  // Replace <b> and </b> with placeholders, strip all other tags, then restore.
+  return html
+    .replace(/<b>/gi, '\x00B_OPEN\x00')
+    .replace(/<\/b>/gi, '\x00B_CLOSE\x00')
+    .replace(/<[^>]*>/g, '')                     // strip all remaining HTML tags
+    .replace(/\x00B_OPEN\x00/g, '<b>')
+    .replace(/\x00B_CLOSE\x00/g, '</b>');
+}
+
+// ---------------------------------------------------------------------------
 // Hit row component
 // ---------------------------------------------------------------------------
 
@@ -119,7 +134,7 @@ function HitRow({ hit, index, selected }: { hit: SearchHit; index: number; selec
       {hit.snippet && (
         <span
           className="hit-snippet"
-          dangerouslySetInnerHTML={{ __html: hit.snippet }}
+          dangerouslySetInnerHTML={{ __html: sanitizeSnippet(hit.snippet) }}
         />
       )}
 
