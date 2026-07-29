@@ -131,10 +131,14 @@ pub fn search(conn: &Connection, query: &SearchQuery<'_>) -> Result<Vec<SearchHi
         let entry = pool.entry(hit.doc_id).or_insert_with(|| CandidateEntry {
             path:    hit.path,
             title:   hit.title,
-            snippet: hit.snippet,
+            snippet: None,
             rrf:     0.0,
             sources: HitSources::default(),
         });
+        // Preserve BM25 snippet — overwrite if the entry has no snippet yet.
+        if entry.snippet.is_none() && hit.snippet.is_some() {
+            entry.snippet = hit.snippet;
+        }
         entry.rrf += contribution;
         entry.sources.bm25 = true;
     }
@@ -159,6 +163,10 @@ pub fn search(conn: &Connection, query: &SearchQuery<'_>) -> Result<Vec<SearchHi
                         rrf:     0.0,
                         sources: HitSources::default(),
                     });
+                    // Preserve snippet from earlier legs (e.g. BM25).
+                    if entry.snippet.is_none() && hit.snippet.is_some() {
+                        entry.snippet = hit.snippet;
+                    }
                     entry.rrf += contribution;
                     entry.sources.vector = true;
                 }
