@@ -142,8 +142,8 @@ pub fn open_file(path: String) -> Result<(), String> {
     tracing::info!("Opening file via OS: {}", path);
 
     #[cfg(target_os = "windows")]
-    let result = std::process::Command::new("cmd")
-        .args(["/C", "start", "", &path])
+    let result = std::process::Command::new("explorer")
+        .arg(&path)
         .spawn();
 
     #[cfg(target_os = "macos")]
