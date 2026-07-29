@@ -110,12 +110,16 @@ pub fn apply_schema(conn: &Connection) -> Result<(), DbError> {
         return Err(DbError::Rusqlite(e));
     }
 
-    if let Err(e) = conn.execute_batch(VEC0_SCHEMA_SQL) {
-        let _ = conn.execute_batch("ROLLBACK;");
-        return Err(DbError::Rusqlite(e));
-    }
-
     conn.execute_batch("COMMIT;").map_err(DbError::Rusqlite)?;
+
+    // -----------------------------------------------------------------
+    // Phase 2: vec0 virtual tables OUTSIDE the explicit transaction.
+    //
+    // sqlite-vec's vec0 module creates shadow tables internally.
+    // Nesting inside BEGIN EXCLUSIVE corrupts the WAL, so these MUST
+    // run in autocommit mode (i.e. after COMMIT above).
+    // -----------------------------------------------------------------
+    conn.execute_batch(VEC0_SCHEMA_SQL).map_err(DbError::Rusqlite)?;
 
     // Force a WAL checkpoint so the schema is flushed to the main DB file.
     // This prevents "disk image is malformed" errors from un-checkpointed
