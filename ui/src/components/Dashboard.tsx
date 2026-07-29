@@ -454,8 +454,8 @@ export default function Dashboard() {
                   </div>
                 ) : indexedFiles.length === 0 ? (
                   <div style={{ textAlign: 'center', padding: '16px', color: 'var(--c-text-muted)', fontSize: '12px' }}>No indexed files found.</div>
-                ) : indexedFiles.map((f, i) => (
-                  <div key={i} style={{
+                ) : indexedFiles.map((f) => (
+                  <div key={f.path} style={{
                     padding: '6px 10px', borderRadius: 'var(--radius-sm)',
                     background: 'rgba(74,222,128,0.04)', border: '1px solid rgba(74,222,128,0.08)',
                     display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px',
@@ -477,8 +477,8 @@ export default function Dashboard() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 {failedFiles.length === 0 ? (
                   <div style={{ textAlign: 'center', padding: '16px', color: 'var(--c-text-muted)', fontSize: '12px' }}>No failed files.</div>
-                ) : failedFiles.map((f, i) => (
-                  <div key={i} style={{
+                ) : failedFiles.map((f) => (
+                  <div key={f.path} style={{
                     padding: '6px 10px', borderRadius: 'var(--radius-sm)',
                     background: 'rgba(248,113,113,0.04)', border: '1px solid rgba(248,113,113,0.08)',
                     display: 'flex', flexDirection: 'column', gap: '2px',
@@ -502,8 +502,8 @@ export default function Dashboard() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                 {skippedFiles.length === 0 ? (
                   <div style={{ textAlign: 'center', padding: '16px', color: 'var(--c-text-muted)', fontSize: '12px' }}>No skipped files.</div>
-                ) : skippedFiles.map((f, i) => (
-                  <div key={i} style={{
+                ) : skippedFiles.map((f) => (
+                  <div key={f.path} style={{
                     padding: '6px 10px', borderRadius: 'var(--radius-sm)',
                     background: 'rgba(250,204,21,0.04)', border: '1px solid rgba(250,204,21,0.06)',
                     display: 'flex', flexDirection: 'column', gap: '2px',
