@@ -21,8 +21,6 @@ src-tauri/gen/
 data/
 db/
 models/
-/home/rajpalsinghpanwar/Crumbs/data/
-
 # OS / IDE
 .DS_Store
 .vscode/
