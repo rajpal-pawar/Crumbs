@@ -473,6 +473,7 @@ fn run_reindex_pipeline_internal_impl(
             if let (Some(w), Some(h)) = (writer_opt, rt) {
                 let w = w.clone();
                 let event = serde_json::json!({
+                    "status": "indexing",
                     "method": "progress",
                     "params": {
                         "scanned": s,
