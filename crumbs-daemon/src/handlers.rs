@@ -839,12 +839,14 @@ fn cleanup_removed_dirs(db: &Database, removed_dirs: &[PathBuf]) -> Result<(), S
         for dir in removed_dirs {
             // Escape LIKE wildcards in the directory path to prevent
             // unintended pattern matching (e.g. a dir named "foo%bar").
-            // Also append a trailing '/' so "/docs" doesn't match "/docs_backup".
-            let escaped = dir.display().to_string()
-                .replace('\\', "\\\\")
+            // Normalise to forward slashes so the LIKE prefix matches paths
+            // consistently regardless of OS (Windows stores backslash paths
+            // via display(), but we normalise here to avoid mismatches).
+            let normalised = dir.display().to_string().replace('\\', "/");
+            let escaped = normalised
                 .replace('%', "\\%")
                 .replace('_', "\\_");
-            let prefix = if escaped.ends_with('/') || escaped.ends_with('\\') {
+            let prefix = if escaped.ends_with('/') {
                 format!("{}%", escaped)
             } else {
                 format!("{}/%", escaped)
