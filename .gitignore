@@ -7,6 +7,7 @@ ui/node_modules/
 ui/dist/
 ui/build/
 node_modules/
+dist/
 
 # Tauri
 src-tauri/target/
