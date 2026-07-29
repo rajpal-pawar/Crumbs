@@ -462,7 +462,7 @@ export default function Dashboard() {
                   }}>
                     <div style={{ minWidth: 0, flex: 1 }}>
                       <div style={{ fontSize: '11px', color: 'var(--c-text)', fontFamily: 'monospace', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {f.title || f.path.split('/').pop()}
+                        {f.title || f.path.split(/[\\/]/).pop()}
                       </div>
                       <div style={{ fontSize: '9px', color: 'var(--c-text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.path}</div>
                     </div>
@@ -488,7 +488,7 @@ export default function Dashboard() {
                         {f.reason}
                       </span>
                       <span style={{ fontSize: '11px', color: 'var(--c-text)', fontFamily: 'monospace', wordBreak: 'break-all', marginTop: '1px' }}>
-                        {f.path.split('/').pop() || f.path}
+                        {f.path.split(/[\\/]/).pop() || f.path}
                       </span>
                     </div>
                     <span style={{ fontSize: '9px', color: 'var(--c-text-muted)', wordBreak: 'break-all', marginTop: '2px' }}>{f.path}</span>
@@ -513,7 +513,7 @@ export default function Dashboard() {
                         {f.reason}
                       </span>
                       <span style={{ fontSize: '11px', color: 'var(--c-text)', fontFamily: 'monospace', wordBreak: 'break-all', marginTop: '1px' }}>
-                        {f.path.split('/').pop() || f.path}
+                        {f.path.split(/[\\/]/).pop() || f.path}
                       </span>
                     </div>
                     <span style={{ fontSize: '9px', color: 'var(--c-text-muted)', wordBreak: 'break-all', marginTop: '2px' }}>{f.path}</span>
