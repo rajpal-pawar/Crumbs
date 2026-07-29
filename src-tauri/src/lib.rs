@@ -58,10 +58,10 @@ pub fn run() {
                         info!("Ctrl+Shift+Space shortcut pressed!");
                         if let Some(window) = app.get_webview_window("search") {
                             if window.is_visible().unwrap_or(false) {
-                                window.hide().unwrap();
+                                let _ = window.hide();
                             } else {
-                                window.show().unwrap();
-                                window.set_focus().unwrap();
+                                let _ = window.show();
+                                let _ = window.set_focus();
                             }
                         }
                     }
@@ -95,14 +95,14 @@ pub fn run() {
                     match event.id().as_ref() {
                         "open_search" => {
                             if let Some(window) = app.get_webview_window("search") {
-                                window.show().unwrap();
-                                window.set_focus().unwrap();
+                                let _ = window.show();
+                                let _ = window.set_focus();
                             }
                         }
                         "settings_dashboard" => {
                             if let Some(window) = app.get_webview_window("settings") {
-                                window.show().unwrap();
-                                window.set_focus().unwrap();
+                                let _ = window.show();
+                                let _ = window.set_focus();
                             }
                         }
                         "quit" => {
@@ -141,7 +141,7 @@ pub fn run() {
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 if window.label() == "settings" {
                     api.prevent_close();
-                    window.hide().unwrap();
+                    let _ = window.hide();
                 }
             }
             _ => {}
