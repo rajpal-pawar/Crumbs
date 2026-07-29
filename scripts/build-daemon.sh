@@ -57,10 +57,22 @@ echo "==> Building crumbs-daemon (mode=$BUILD_MODE, target=$TARGET)"
 # Cargo build
 # --------------------------------------------------------------------------- #
 cd "$ROOT_DIR"
-# shellcheck disable=SC2086
-cargo build $CARGO_FLAGS --bin crumbs-daemon 2>&1
 
-SRC_BIN="$ROOT_DIR/target/$BUILD_MODE/crumbs-daemon"
+# Detect whether TARGET was explicitly set by the user (cross-compile) or
+# resolved from the host triple above (native build).
+HOST_TARGET="$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')"
+
+if [[ "$TARGET" != "$HOST_TARGET" ]]; then
+    # Cross-compile: pass --target and use target-qualified output path.
+    # shellcheck disable=SC2086
+    cargo build $CARGO_FLAGS --bin crumbs-daemon --target "$TARGET" 2>&1
+    SRC_BIN="$ROOT_DIR/target/$TARGET/$BUILD_MODE/crumbs-daemon"
+else
+    # Native build: no --target flag, standard output path.
+    # shellcheck disable=SC2086
+    cargo build $CARGO_FLAGS --bin crumbs-daemon 2>&1
+    SRC_BIN="$ROOT_DIR/target/$BUILD_MODE/crumbs-daemon"
+fi
 DST_DIR="$ROOT_DIR/src-tauri/binaries"
 DST_BIN="$DST_DIR/crumbs-daemon-$TARGET"
 
