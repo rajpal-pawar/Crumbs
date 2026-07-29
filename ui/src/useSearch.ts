@@ -28,6 +28,10 @@ export function useSearch(query: string): SearchState {
     const trimmed = query.trim();
 
     if (!trimmed) {
+      // Reset internal state so stale results don't persist when the
+      // query transitions from non-empty → empty → non-empty again.
+      generation.current++;
+      setState({ status: 'idle' });
       return;
     }
 
