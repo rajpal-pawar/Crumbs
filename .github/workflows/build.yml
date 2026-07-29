@@ -51,9 +51,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p src-tauri/binaries
-          cd crumbs-daemon
-          cargo build --release
-          cd ..
+          cargo build --release -p crumbs-daemon
           cp ${{ matrix.daemon_src }} ${{ matrix.daemon_dest }}
 
       - name: Build App and Draft Release
